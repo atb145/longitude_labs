@@ -779,9 +779,8 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
             e.canonical = e.mentions[0][3]
             e.proposed = target.label if target else "Person ?"
             e.custom, e.tier, e.rule = "", "review", "always_redact.person_names"
-            e.reason = (f"“{e.canonical}” is a common nickname for {target.canonical if target else 'someone'} "
-                        f"({e.proposed}). Accept to give it the same pseudonym; Keep original if it's someone else. "
-                        "Left unlinked it would either leak or become a new, false person.")
+            e.reason = (f"Possible nickname of {target.canonical if target else 'someone'} ({e.proposed}). "
+                        "Accept to link; Keep original if it's someone else.")
             d = decisions.get("E|" + e.key)
             e.status = {"accept": "accepted", "keep": "kept", "edit": "edited"}[d["action"]] if d else "pending"
             e.custom = d.get("value", "") if d else ""
@@ -815,10 +814,10 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 continue
             if date_mode == "shifted" and d:
                 e.proposed, e.rule = _date_like(e.mentions[0][3], d + shift), "generalize.dates (shifted)"
-                e.reason = "All dates in this set move by the same hidden offset, so intervals and order survive."
+                e.reason = "Same hidden offset for every date; gaps survive."
             elif date_mode == "relative" and d and anchor:
                 e.proposed, e.rule = f"Day {(d - anchor).days}", "generalize.dates (relative)"
-                e.reason = "Dates become days counted from the earliest date in the set; order and gaps survive."
+                e.reason = "Days from the earliest date; gaps survive."
         if e.type in ("MONEY", "SHARE_COUNT"):
             e.proposed = round_figure(e.mentions[0][3])
         if e.type == "STREET_ADDRESS":
@@ -836,9 +835,8 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 continue
             if pub_mode == "review" and looks_public(e) and not cue:
                 e.tier, e.rule = "review", "names.public_company_party_check"
-                e.reason = ("Public company. Is it a party to this engagement (the client, a counterparty, the target)? "
-                            "If so, Accept — keeping the name reveals who hired whom. Keep original only when it is "
-                            "cited for public facts and isn't a party (e.g. “its 10-K reports 35M customers”).")
+                e.reason = ("Public company. A party (client, counterparty, target)? Accept. "
+                            "Only cited for public facts? Keep original.")
                 d = decisions.get("E|" + e.key)
                 e.status = {"accept": "accepted", "keep": "kept", "edit": "edited"}[d["action"]] if d else "pending"
                 e.custom = d.get("value", "") if d else ""
@@ -851,8 +849,7 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         if e.type == "ORGANIZATION" and (cue or {"known_party", "domain_link"} & e.sources):
             e.tier = "auto"  # context says it's a party: redact without asking
             e.rule = "names.party_by_context"
-            e.reason = (f"Redacted as a party: {cue or 'its own web or email domain appears in the document'}. "
-                        "A party's name reveals who was involved, so it's redacted even if the company is public.")
+            e.reason = f"Party by context ({cue or 'its own domain appears'})."
         elif spec.get("auto"):
             e.tier = "auto"
         elif e.type == "PERSON":
@@ -862,9 +859,9 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         else:
             e.tier = "auto" if high else "review"
         if e.tier == "review":
-            why = ("only a single name was found, with no full name to link it to" if e.type == "PERSON"
-                   else "it was found by the language model, not a company-name pattern")
-            e.reason = f"Needs a check because {why}. If it is real: {e.reason[0].lower()}{e.reason[1:]}"
+            why = ("a single name with no full name to link to" if e.type == "PERSON"
+                   else "found by the language model only")
+            e.reason = f"Unsure: {why}."
 
         d = decisions.get("E|" + e.key)
         if d:
@@ -939,10 +936,8 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                     found["place"] = loc
                 if len(found) >= policy.quasi.get("min_categories", 3):
                     attrs = ", ".join(f"{k} ({v})" for k, v in found.items())
-                    reason = (f"Combines {len(found)} identifying attributes — {attrs}. Together they can single out "
-                              "one person or party even with every name removed. Edit to generalize two or more "
-                              "(e.g. “a senior compliance officer at a mid-size fund who left in 2022”); "
-                              "Keep original if the combination is common.")
+                    reason = (f"{len(found)} identifying details together: {attrs}. Edit to generalize two or more, "
+                              "or keep if common.")
                     add_flag("quasi.combination", doc, a, b, anonymized(doc, a, b), reason, "sentence")
 
     for f in flags.values():
@@ -1032,12 +1027,11 @@ def release_check(res: Result, warnings: list[list[dict]] | None = None, rights_
     cc = consistency_check(res)
     out = []
     if not rights_confirmed:
-        out.append("Rights not confirmed: confirm you may share every document (and that client, patient or "
-                   "counterparty consent covers it) before release.")
+        out.append("Confirm you have the right to share these files.")
     if cc["unreviewed"]:
-        out.append(f"{len(cc['unreviewed'])} review item(s) still open.")
+        out.append(f"Finish review ({len(cc['unreviewed'])} open).")
     if not cc["leak_free"]:
-        out.append("Original text was found in the output — see the 'leaks' column.")
+        out.append("Original text found in the output (see 'leaks').")
     if not cc["all_consistent"]:
         out.append("Some entities have more than one replacement.")
     for name, ws in zip(res.names, warnings or []):
