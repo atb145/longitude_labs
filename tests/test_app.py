@@ -68,4 +68,5 @@ def test_old_session_is_upgraded_not_crashing():
     at.session_state.view = "Documents"
     at.run()
     assert not at.exception, at.exception
-    assert getattr(at.session_state.session, "VERSION", 0) > 0
+    from engine import Session
+    assert getattr(at.session_state.session, "VERSION", None) == Session.VERSION

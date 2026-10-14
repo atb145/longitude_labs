@@ -735,6 +735,16 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         return any(re.match(r"\.?,?\s*\((?:NASDAQ|Nasdaq|NYSE|NYSE American|OTC\w*|AMEX|LSE|TSX)\s*:\s*[A-Z.]{1,6}\)",
                             texts[m[0]][m[2]:m[2] + 30]) for m in e.mentions)
 
+    def caption_of(e: Entity) -> str:
+        """SEC cover pages label each field in parentheses on the next line: '(Address of Principal Executive
+        Offices)', '(Zip Code)'. Returns that caption in sentence case, or ''."""
+        for doc, _, me, _ in e.mentions:
+            m = re.match(r"[\s\d,-]{0,24}\(([A-Z][^()\n]{2,60})\)", texts[doc][me:me + 160])
+            if m:
+                words = " ".join(m.group(1).split())
+                return words[:1].upper() + words[1:].lower()
+        return ""
+
     def party_cue(e: Entity) -> str:
         """Context tool — words around a mention that make it a party (registrant line, defined role,
         'agreement with', 'will acquire' …). Returns the cue found, or ''."""
@@ -885,7 +895,14 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 e.reason = "Days from the earliest date; gaps survive."
         if e.type in ("MONEY", "SHARE_COUNT"):
             e.proposed = round_figure(e.mentions[0][3])
-        if e.type == "STREET_ADDRESS":
+        caption = caption_of(e) if settings.get("role_labels", False) and e.type in ("STREET_ADDRESS",
+                                                                                         "POSTAL_CODE") else ""
+        if caption and not (ops.get("labels") or {}).get(e.key):
+            # The document names the field: "(Address of Principal Executive Offices)" → use that, not the city.
+            e.label = e.proposed = caption
+            e.rule = "generalize.context_caption"
+            e.reason = "Labelled by the document's own caption."
+        elif e.type == "STREET_ADDRESS":
             m = ADDRESS_TAIL.search(e.mentions[0][3])
             if settings.get("generalize_addresses", True) and m:
                 e.proposed = f"{m.group(1)}, {m.group(2)}"
@@ -910,6 +927,8 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 e.status, e.rule, e.reason = "setting", "always_redact.private_organizations (off)", "Organization redaction is turned off."
                 continue
 
+        if (ops.get("labels") or {}).get(e.key):
+            e.proposed = e.label  # a reviewer's rename beats city/state, month-year or rounding
         high = e.score >= policy.auto_apply
         if e.type == "ORGANIZATION" and (cue or {"known_party", "domain_link"} & e.sources):
             e.tier = "auto"  # context says it's a party: redact without asking

@@ -111,6 +111,13 @@ entities:
     rule: always_redact.ssns
     reason: Always redacted.
     auto: true
+  POSTAL_CODE:
+    title: ZIP codes
+    action: redact
+    label: "ZIP {1}"
+    rule: always_redact.postal_codes
+    reason: A ZIP+4 points to a building.
+    auto: true
   STREET_ADDRESS:
     title: Street addresses
     action: generalize
@@ -246,6 +253,11 @@ recognizers:
     name: sec_file_number
     patterns:
       - '(?P<v>\b0\d{2}-\d{5}\b)'
+  - entity: POSTAL_CODE
+    score: 0.9
+    patterns:
+      - '(?P<v>\b\d{5}-\d{4}\b)'
+      - '(?P<v>\b\d{5}\b)(?=[^\n]{0,40}\n?[^\n]{0,40}\(Zip Code\))'
   - entity: STREET_ADDRESS
     score: 0.9
     patterns:

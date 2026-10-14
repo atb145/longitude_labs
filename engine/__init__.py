@@ -20,6 +20,20 @@ __all__ = ["Session", "Policy", "Result", "available_policies", "load_policy", "
 _ANALYZERS: dict[str, object] = {}
 
 
+def _code_version() -> str:
+    """Fingerprint of the engine and policy files. Sessions created by other code are rebuilt (see upgrade)."""
+    import hashlib
+    from pathlib import Path
+    root = Path(__file__).resolve().parent
+    h = hashlib.sha256()
+    for path in sorted(list(root.glob("*.py")) + list((root.parent / "policies").rglob("*.yaml"))):
+        h.update(path.read_bytes())
+    return h.hexdigest()[:12]
+
+
+_CODE_VERSION = _code_version()
+
+
 def analyzer_for(policy: Policy):
     # Keyed by the recognizer definitions, so an uploaded pack with the same name gets its own analyzer.
     key = repr(policy.recognizers)
@@ -30,7 +44,7 @@ def analyzer_for(policy: Policy):
 
 @dataclass
 class Session:
-    VERSION = 5  # bump when the shape of Session/Policy changes; the app rebuilds older sessions
+    VERSION = _CODE_VERSION  # changes with any engine/policy edit, so open sessions are rebuilt on update
     names: list[str]
     texts: list[str]
     policy: Policy
