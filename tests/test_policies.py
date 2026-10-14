@@ -407,3 +407,17 @@ def test_leaks_are_located_and_fixable():
     s.redact_as(lk["key"], lk["text"])                                          # the "Redact it" button
     res2 = s.run()
     assert consistency_check(res2)["leak_free"] and "Mercer" not in res2.outputs[0]
+
+
+# ---------------------------------------------------------------- search
+def test_search_reports_what_happened_to_each_occurrence():
+    from engine import search
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    _, res = run(docs)
+    mercer = search(res, "Mercer")
+    assert len(mercer) >= 10 and {h["status"] for h in mercer} == {"redacted"}
+    assert {h["doc"] for h in mercer} == {0, 1, 2}                      # found in every document
+    assert all(h["status"] == "visible" for h in search(res, "account"))  # ordinary word, still showing
+    assert {h["status"] for h in search(res, "brother-in-law")} == {"flagged"}
+    assert search(res, "Greenwich")[0]["status"] == "generalized"         # city survives the address rewrite
+    assert search(res, "zzz-not-there") == [] and search(res, " ") == []

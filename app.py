@@ -12,7 +12,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from engine import Session, available_policies, consistency_check, load_policy, load_policy_text, redaction_log
+from engine import (Session, available_policies, consistency_check, load_policy, load_policy_text, redaction_log,
+                    search)
 from engine.export import buyer_zip, internal_log_csv
 from engine.extract import SUPPORTED
 from engine.registry import norm_form, split_key, type_title
@@ -152,6 +153,17 @@ def inject_css() -> None:
     .orig { border-radius:.3rem; padding:0 .1em; cursor:help; }
     .orig.kept { background:transparent !important; border-bottom:1px dotted var(--dim); }
     .flag { border-bottom:2px dashed #1DB5DA; cursor:help; }
+    mark.hit { background: color-mix(in srgb, #A7DAEF 75%, transparent); color: inherit; padding: 0 .1em; border-radius: .2rem; }
+    .hit-chip { outline: 2px solid #1DB5DA; outline-offset: 1px; }
+    mark.hit.pulse, .hit-chip.pulse { animation: leakpulse 1.2s ease-in-out 2; }
+    .search-sum { font-size: .9rem; margin: .2rem 0 .4rem; color: var(--dim); }
+    .search-sum b { color: var(--fg); } .search-sum b.warn { color: #c27a1a; } .search-sum b.ok { color: #2f8f62; }
+    .hit-row { font-size: .88rem; line-height: 1.5; }
+    .hit-st { font-size: .74rem; font-weight: 600; padding: .05rem .5rem; border-radius: 999px; }
+    .st-redacted, .st-changed { background: color-mix(in srgb, #2f8f62 18%, transparent); }
+    .st-still, .st-visible, .st-partly { background: color-mix(in srgb, #e0a050 30%, transparent); }
+    .st-generalized { background: color-mix(in srgb, #e0a050 22%, transparent); }
+    .st-kept, .st-flagged { background: color-mix(in srgb, #1DB5DA 18%, transparent); }
     mark.leak { background: color-mix(in srgb, #e0a050 45%, transparent); color: inherit; padding: 0 .15em;
                 border-radius: .25rem; outline: 1.5px solid #c27a1a; cursor: help; }
     mark.leak.pulse { animation: leakpulse 1.2s ease-in-out 2; }
@@ -287,7 +299,7 @@ def do_split(sess: Session, ent, form: str, dest: str) -> None:
         sess.split(ent.key, form, None, dest)
         st.session_state.focus = dest
         where = "the entity you picked"
-    st.session_state.focus_note = f"Moved every “{form}” form out of {ent.label} into {where}"
+    st.session_state.focus_note = f"Moved every “{form}” variant out of {ent.label} into {where}"
 
 
 def split_controls(sess: Session, res, ent, key: str) -> None:
@@ -297,7 +309,7 @@ def split_controls(sess: Session, res, ent, key: str) -> None:
         g = groups.setdefault(norm_form(ent.type, f), [[], 0])
         g[0].append(" ".join(f.split()))
         g[1] += cnt
-    form = st.selectbox("Form to split off", list(groups), key=f"{key}_form",
+    form = st.selectbox("Variant to split off", list(groups), key=f"{key}_form",
                         format_func=lambda n: f"{', '.join(groups[n][0])}  (×{groups[n][1]})")
     types = list(dict.fromkeys([ent.type, "PERSON", "ORGANIZATION"]
                                + [t for t, sp in sess.policy.entities.items() if sp.get("action") == "redact"] + ["MANUAL"]))
@@ -482,7 +494,7 @@ def entity_popover(sess: Session, res, e, focus) -> None:
                     st.rerun()
                 except ValueError as exc:
                     st.error(str(exc))
-        st.markdown('<p class="ll-sub">Split a form off</p>', unsafe_allow_html=True)
+        st.markdown('<p class="ll-sub">Split a variant off</p>', unsafe_allow_html=True)
         split_controls(sess, res, e, f"sb-{e.key}")
         others = [o for o in res.entities if o.key != e.key and o.is_redacted]
         if others:
@@ -583,7 +595,15 @@ def sidebar(sess: Session, res) -> None:
                 st.session_state._ent_focus_seen = focus
             if st.session_state.get("ent_type") not in options:
                 st.session_state.ent_type = options[0] if options else None
-            if options:
+            eq = st.text_input("Find an entity", key="ent_search", label_visibility="collapsed",
+                               placeholder="🔍 Find a name or label…").strip().lower()
+            if eq:
+                found = [e for e in res.entities if eq in e.label.lower() or eq in e.canonical.lower()
+                         or any(eq in m[3].lower() for m in e.mentions)]
+                st.caption(f"{len(found)} match{'es' if len(found) != 1 else ''}" if found else "No entity matches.")
+                for e in found[:30]:
+                    entity_popover(sess, res, e, focus)
+            elif options:
                 pick = st.selectbox("Show", options, key="ent_type", label_visibility="collapsed",
                                     format_func=lambda t: f"To review ({len(pending)})" if t == "__review__"
                                     else f"{type_name(t)} ({len(by_type[t])})")
@@ -682,7 +702,7 @@ def bearing(done: int, total: int) -> None:
 def review(sess: Session, res) -> None:
     with st.expander("Quick tips"):
         st.markdown("- **Accept** the proposal · **Keep original** · **Edit** to rename (applies everywhere)\n"
-                    "- Two people merged by mistake? **Split a form off**\n"
+                    "- Two people merged by mistake? **Split a variant off**\n"
                     "- **Back** undoes your last decision\n"
                     "- Missed something? Documents → **✎ Edit**, select it, **Redact**")
     queue = res.queue
@@ -744,7 +764,7 @@ def review(sess: Session, res) -> None:
     if st.session_state.get("editing"):
         forms = forms_of(item)
         st.markdown(f'<p class="ll-label" style="margin-top:1.2rem">Your replacement will cover '
-                    f'{len(forms)} form{"s" if len(forms) != 1 else ""} of this name</p>', unsafe_allow_html=True)
+                    f'{len(forms)} variant{"s" if len(forms) != 1 else ""} of this name</p>', unsafe_allow_html=True)
         for f, _, cnt, fdocs, (md, ms, me, _) in forms:
             st.markdown(
                 f'<div class="form-row"><span class="form">{html.escape(f)}</span> '
@@ -753,14 +773,14 @@ def review(sess: Session, res) -> None:
                 unsafe_allow_html=True)
         kind, value = replacement_picker(res, item, f"rp-{key}", getattr(item, "label", "") or item.proposed)
         b1, b2, _ = st.columns([1.2, 1, 3], vertical_alignment="bottom")
-        if b1.button("Apply to all forms", type="primary", width="stretch"):
+        if b1.button("Apply to all variants", type="primary", width="stretch"):
             if apply_replacement(sess, res, key, item, kind, value):
                 st.rerun()
         if b2.button("Cancel", width="stretch"):
             st.session_state.editing = False
             st.rerun()
         if not is_flag:
-            with st.expander("Split a form off into another entry"):
+            with st.expander("Split a variant off into another entry"):
                 split_controls(sess, res, item, f"rv-{key}")
 
     if n > 1:
@@ -772,7 +792,15 @@ def review(sess: Session, res) -> None:
 
 
 # --------------------------------------------------------------------------- documents
-def _plain(text: str, line: list[int], leaks: list[str] | None = None) -> str:
+def _search_rx(query: str):
+    words = query.split()
+    if not words or len(" ".join(words)) < 2:
+        return None
+    return re.compile(r"(?<![\w])(" + r"\s+".join(map(re.escape, (html.escape(w) for w in words))) + r")(?![\w])",
+                      re.IGNORECASE)
+
+
+def _plain(text: str, line: list[int], leaks: list[str] | None = None, rx=None) -> str:
     """Escape text and drop a line anchor after each newline so two panes can scroll in step. Leaked originals
     (text that should have been redacted) are highlighted."""
     escaped = html.escape(text)
@@ -780,6 +808,8 @@ def _plain(text: str, line: list[int], leaks: list[str] | None = None) -> str:
         escaped = re.sub(r"(?<![\w-])(" + re.escape(html.escape(lk)) + r")(?![\w-])",
                          r'<mark class="leak" title="Original text still showing — should be redacted">\1</mark>',
                          escaped, flags=re.IGNORECASE)
+    if rx is not None:  # the viewer's search term (passed in, never shared between sessions)
+        escaped = rx.sub(r'<mark class="hit">\1</mark>', escaped)
     parts = escaped.split("\n")
     out = parts[0]
     for p in parts[1:]:
@@ -800,15 +830,17 @@ def _pencil(ref: str) -> str:
     return f'<span class="chip-edit" data-ref="{html.escape(ref, quote=True)}" title="Change or remove this redaction">✎</span>'
 
 
-def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False) -> str:
+def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False, query: str = "") -> str:
     """HTML for one document. ``version`` is "anonymized" (placeholder chips, hover = original) or
     "original" (source text with every detected span highlighted, hover = its replacement)."""
     text, out, pos, line = res.texts[doc], [], 0, [0]
     by_key = {e.key: e for e in res.entities}
     leaks = ([lk["text"] for lk in consistency_check(res)["leak_items"] if lk["doc"] == doc]
              if version == "anonymized" else [])
+    rx_plain = _search_rx(query)
     for g in res.segments[doc]:
-        out.append(_plain(text[pos:g.start], line, leaks))
+        out.append(_plain(text[pos:g.start], line, leaks, rx_plain))
+        hitcls = " hit-chip" if rx_plain is not None and rx_plain.search(html.escape(" ".join(g.original.split()))) else ""
         if g.kind == "flag":
             changed = g.status in ("accepted", "edited")
             if version == "original":
@@ -827,10 +859,10 @@ def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False) -
             cls = "kept" if not e.is_redacted else ("pending" if e.status == "pending" else "")
             if version == "original":
                 tip = f"{e.label} · becomes “{g.replacement}” · {e.status}" if e.is_redacted else f"Kept · {e.rule}"
-                out.append(f'<span class="orig t-{color_type(g.type)} {cls}" title="{html.escape(tip)}">{_plain(g.original, line)}</span>')
+                out.append(f'<span class="orig t-{color_type(g.type)} {cls}{hitcls}" title="{html.escape(tip)}">{_plain(g.original, line)}</span>')
             elif e.is_redacted:
                 tip = f"Original: {g.original} · {e.label} · {e.status}"
-                out.append(f'<span class="chip t-{color_type(g.type)} {cls}" title="{html.escape(tip)}" '
+                out.append(f'<span class="chip t-{color_type(g.type)} {cls}{hitcls}" title="{html.escape(tip)}" '
                            f'data-orig="{html.escape(" ".join(g.original.split()), quote=True)}">'
                            f'{html.escape(g.replacement)}</span>{_anchors(g.original, line)}')
             else:
@@ -838,7 +870,7 @@ def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False) -
             if edit and version == "anonymized":
                 out.append(_pencil("E|" + g.ref))
         pos = g.end
-    out.append(_plain(text[pos:], line, leaks))
+    out.append(_plain(text[pos:], line, leaks, rx_plain))
     return "".join(out)
 
 
@@ -901,6 +933,17 @@ export default function (component) {
       const pane = target.closest('.pane');
       pane.scrollTop = Math.max(0, target.offsetTop - pane.offsetTop - 80);
       target.classList.add('pulse');
+    }
+  }
+  // "Show" from search: scroll to the k-th match in the original pane (the other pane follows when synced).
+  if (typeof data.hit === 'number' && data.hit >= 0) {
+    const pane = root.querySelector('.pane[data-version="original"]') || root.querySelector('.pane');
+    const marks = pane ? Array.from(pane.querySelectorAll('mark.hit, .hit-chip')) : [];
+    const target = marks[Math.min(data.hit, marks.length - 1)];
+    if (target) {
+      pane.scrollTop = Math.max(0, target.offsetTop - pane.offsetTop - 80);
+      target.classList.add('pulse');
+      pane.dispatchEvent(new Event('scroll'));
     }
   }
   if (!data.sync || panes.length !== 2) return;
@@ -1076,8 +1119,56 @@ def edit_dialog(sess: Session, res, ref: str) -> None:
         delete_entity(sess, item)
         st.rerun()
     if not is_flag:
-        with st.expander("Split a form off into another entry"):
+        with st.expander("Split a variant off into another entry"):
             split_controls(sess, res, item, f"ed-split-{ref}")
+
+
+STATUS_TEXT = {"redacted": "redacted", "generalized": "still showing (generalized)", "kept": "kept",
+               "flagged": "flagged for review", "changed": "changed", "partly redacted": "partly redacted",
+               "visible": "still showing"}
+
+
+def search_panel(sess: Session, res) -> None:
+    """Search every document for a word or phrase and see what happened to each occurrence."""
+    q = st.text_input("Search the documents", key="doc_search", label_visibility="collapsed",
+                      placeholder="🔍 Search all documents for a word or phrase…")
+    if not q.strip():
+        return
+    hits = search(res, q)
+    labelled = [e for e in res.entities if q.strip().lower() in e.label.lower() and e.label not in ("Kept", "")]
+    for e in labelled[:3]:
+        st.caption(f"“{e.label}” is the pseudonym for {e.canonical} — {len(e.mentions)}× in "
+                   f"{len({m[0] for m in e.mentions})} document(s).")
+    if not hits:
+        if not labelled:
+            st.caption(f"“{q.strip()}” doesn't appear in any original document.")
+        return
+    showing = [h for h in hits if h["status"] in ("visible", "generalized", "partly redacted")]
+    docs_hit = sorted({h["doc"] for h in hits})
+    st.markdown(f'<p class="search-sum"><b>{len(hits)}</b> match{"es" if len(hits) != 1 else ""} in '
+                f'{len(docs_hit)} document{"s" if len(docs_hit) != 1 else ""} · '
+                f'<b>{len(hits) - len(showing)}</b> handled · <b class="{"warn" if showing else "ok"}">'
+                f'{len(showing)}</b> still showing</p>', unsafe_allow_html=True)
+    per_doc_index: dict[int, int] = {}
+    with st.container(height=min(64 + 58 * len(hits), 300), border=True):
+        for i, h in enumerate(hits[:80]):
+            k = per_doc_index.get(h["doc"], 0)
+            per_doc_index[h["doc"]] = k + 1
+            t = res.texts[h["doc"]]
+            before = " ".join(t[max(0, h["start"] - 55):h["start"]].split())
+            after = " ".join(t[h["end"]:h["end"] + 55].split())
+            c1, c2 = st.columns([6, 1], vertical_alignment="center")
+            c1.markdown(
+                f'<div class="hit-row"><span class="dim">{html.escape(short(res.names[h["doc"]], 24))}</span> · '
+                f'<span class="hit-st st-{h["status"].split()[0]}">{STATUS_TEXT[h["status"]]}'
+                f'{" → " + html.escape(h["shown"]) if h["status"] in ("redacted", "changed") else ""}</span><br>'
+                f'…{html.escape(before)} <mark class="hit">{html.escape(h["text"])}</mark> {html.escape(after)}…</div>',
+                unsafe_allow_html=True)
+            c2.button("Show", key=f"hit_{i}", width="stretch",
+                      on_click=lambda d=h["doc"], k=k: st.session_state.update(doc_pick=d, search_focus=k,
+                                                                                doc_layout="Side by side"))
+    if showing and st.button(f"Redact every “{q.strip()}”", key="search_redact", type="primary"):
+        redact_dialog(sess, res, {"text": q.strip()})
 
 
 def documents(sess: Session, res) -> None:
@@ -1107,6 +1198,8 @@ def documents(sess: Session, res) -> None:
     d4.button("Next to approve", on_click=next_unapproved, disabled=approved == n, width="stretch")
     if d5.button("＋ Add documents", width="stretch", key="doc_add"):
         add_documents_dialog(sess)
+
+    search_panel(sess, res)
 
     edit = st.session_state.get("edit_mode", False)
     options = [(i, v) for i in range(n) for v in ("original", "anonymized")]
@@ -1144,10 +1237,12 @@ def documents(sess: Session, res) -> None:
 
     body = "".join(
         f'<div class="pane-wrap">{head(d, v)}'
-        f'<div class="pane doc" data-doc="{d}" data-version="{v}">{render_doc(res, d, v, edit)}</div></div>'
+        f'<div class="pane doc" data-doc="{d}" data-version="{v}">'
+        f'{render_doc(res, d, v, edit, st.session_state.get("doc_search", ""))}</div></div>'
         for d, v in panes)
     result = doc_panes(data={"html": f'<div class="panes n{len(panes)}">{body}</div>', "sync": bool(sync),
-                             "edit": edit, "leak": st.session_state.pop("leak_focus", "")},
+                             "edit": edit, "leak": st.session_state.pop("leak_focus", ""),
+                             "hit": st.session_state.pop("search_focus", -1)},
                        key="doc_panes", on_action_change=lambda: None)
     action = json.loads(result.action) if getattr(result, "action", None) else None
     if action and action.get("t") != st.session_state.get("last_action"):

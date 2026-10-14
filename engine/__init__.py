@@ -12,10 +12,10 @@ from dataclasses import dataclass, field, replace
 from .detect import Detection, build_analyzer, detect
 from .extract import extract_document, extract_text
 from .policy import Policy, available_policies, load_policy, load_policy_text
-from .registry import Result, build, consistency_check, redaction_log, release_check
+from .registry import Result, build, consistency_check, redaction_log, release_check, search
 
 __all__ = ["Session", "Policy", "Result", "available_policies", "load_policy", "load_policy_text", "extract_text",
-           "build", "redaction_log", "consistency_check", "release_check", "Detection"]
+           "build", "redaction_log", "consistency_check", "release_check", "search", "Detection"]
 
 _ANALYZERS: dict[str, object] = {}
 
