@@ -698,8 +698,32 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
             return pub_mode == "keep" and looks_public(e) and not party_cue(e)
         return False
 
+    # Context tool — role labels ("Defendant", "Buyer", "Target") instead of "Company B", when switched on.
+    def role_of(e: Entity) -> str:
+        for rule in policy.role_rules:
+            if e.type not in rule["types"]:
+                continue
+            for doc, ms, me, _ in e.mentions:
+                window = texts[doc][me:me + 160] if rule["where"] == "after" else texts[doc][max(0, ms - 80):ms]
+                m = rule["regex"].search(window)
+                if m:
+                    role = rule["role"] or m.groupdict().get("role") or ""
+                    role = re.sub(r"\s+", " ", role).strip()
+                    if role.lower().endswith("s") and role.lower()[:-1] in {"defendant", "respondent", "plaintiff",
+                                                                           "relief defendant"}:
+                        role = role[:-1]
+                    return role[:1].upper() + role[1:]
+        return ""
+
+    roles: dict[str, str] = {}
+    if settings.get("role_labels", False):
+        roles = {e.key: r for e in entities if e.type in ("PERSON", "ORGANIZATION") and not e.nick_target
+                 and e.key not in hand and not kept_by_policy(e) and (r := role_of(e))}
+
     for e in [x for x in entities if x.key not in hand] + [x for x in entities if x.key in hand]:
         spec = policy.spec(e.type)
+        if e.key in roles:
+            continue  # labelled by role below; doesn't use up a letter
         if e.nick_target:
             continue  # takes its target's pseudonym, below
         if kept_by_policy(e):
@@ -709,6 +733,36 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
             "Redacted {1}" if e.type == "MANUAL" else type_title(e.type) + " {1}")
         e.label = _label(spec.get("label", default), counters[e.type])
         counters[e.type] += 1
+    by_role: dict[str, list[Entity]] = defaultdict(list)
+    for e in entities:
+        if e.key in roles:
+            by_role[roles[e.key]].append(e)
+    for role, group in by_role.items():
+        for i, e in enumerate(group):
+            e.label = role if len(group) == 1 else f"{role} {_letters(i)}"
+
+    # Labels the reviewer typed (or that were frozen when documents were added) win over everything, and
+    # every other entity is renumbered around them so no two entities ever share a pseudonym.
+    fixed = {k: v.strip() for k, v in (ops.get("labels") or {}).items() if v and v.strip()}
+    used = set()
+    for e in entities:
+        if e.key in fixed:
+            e.label = fixed[e.key]
+            used.add(e.label.lower())
+    for e in entities:
+        if e.key in fixed or e.label in ("", "Kept") or e.nick_target:
+            continue
+        if e.label.lower() in used:
+            base = re.sub(r"\s+(?:[A-Z]{1,2}|\d+)$", "", e.label)
+            numeric = bool(re.search(r"\d+$", e.label))
+            i = 0
+            while True:
+                cand = f"{base} {i + 1 if numeric else _letters(i)}"
+                if cand.lower() not in used:
+                    e.label = cand
+                    break
+                i += 1
+        used.add(e.label.lower())
     by_key = {e.key: e for e in entities}
 
     # Batch-wide date handling: one random-looking but fixed offset per document set keeps every interval
