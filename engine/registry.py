@@ -1139,6 +1139,43 @@ def redaction_log(res: Result) -> list[dict]:
     return rows
 
 
+def search(res: Result, query: str, limit: int = 300) -> list[dict]:
+    """Find a word or phrase in the original documents and say what happened to each occurrence:
+    redacted (and to what), kept, flagged, partly redacted, or still visible."""
+    words = query.split()
+    if not words or len(" ".join(words)) < 2:
+        return []
+    rx = re.compile(r"(?<![\w])" + r"\s+".join(map(re.escape, words)) + r"(?![\w])", re.IGNORECASE)
+    by_key = {e.key: e for e in res.entities}
+    hits = []
+    for doc, text in enumerate(res.texts):
+        for m in rx.finditer(text):
+            a, b = m.span()
+            inside = next((g for g in res.segments[doc] if g.start <= a and b <= g.end), None)
+            touching = next((g for g in res.segments[doc] if g.start < b and a < g.end), None)
+            hit = {"doc": doc, "start": a, "end": b, "text": m.group(), "status": "visible", "shown": m.group(),
+                   "label": "", "ref": ""}
+            if inside is not None:
+                ent = by_key.get(inside.ref)
+                hit["ref"] = inside.ref
+                if inside.kind == "flag":
+                    hit["status"] = "flagged" if inside.replacement == inside.original else "changed"
+                    hit["shown"] = inside.replacement
+                elif ent is not None and not ent.is_redacted:
+                    hit["status"] = "kept"
+                elif m.group().lower() in inside.replacement.lower():
+                    hit["status"], hit["shown"] = "generalized", inside.replacement  # "Greenwich, Connecticut"
+                else:
+                    hit["status"], hit["shown"] = "redacted", inside.replacement
+                    hit["label"] = ent.label if ent else ""
+            elif touching is not None:
+                hit["status"], hit["ref"] = "partly redacted", touching.ref
+            hits.append(hit)
+            if len(hits) >= limit:
+                return hits
+    return hits
+
+
 def release_check(res: Result, warnings: list[list[dict]] | None = None, rights_confirmed: bool = False) -> list[str]:
     """Everything that must be true before anonymized documents leave: returns the blockers (empty = OK)."""
     cc = consistency_check(res)

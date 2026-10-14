@@ -92,3 +92,17 @@ def test_release_box_lists_leaks_with_show_and_fix():
     assert not at.exception, at.exception
     assert "Mercer" not in at.session_state.session.run().outputs[0]
     assert show is not None
+
+
+def test_search_panel_and_entity_search():
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    at.session_state.view = "Documents"
+    at.run()
+    at.text_input(key="doc_search").set_value("Mercer").run()
+    assert not at.exception, at.exception
+    assert any("match" in m.value and "still showing" in m.value for m in at.markdown)
+    assert [b for b in at.button if b.label == "Show"]
+    at.text_input(key="ent_search").set_value("okafor").run()
+    assert not at.exception, at.exception
+    assert any("match" in c.value for c in at.sidebar.caption)
