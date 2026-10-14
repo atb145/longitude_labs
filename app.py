@@ -818,6 +818,9 @@ def confirm_start_over() -> None:
 def start_view(sess: Session, res) -> None:
     """Step 1 while a set is open: the files, names to always hide, labels, add more."""
     st.markdown('<h2>Your files</h2>', unsafe_allow_html=True)
+    label("Add files to this set")
+    add_documents_form(sess, "start_add")
+    st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
     rows = [{"file": name, "status": ("✓ approved" if is_current(sess, res, i) else
                                       "changed since approval" if i in sess.approved else "in progress"),
              "hidden": len([g for g in res.segments[i] if g.kind != "tidy"]),
@@ -864,9 +867,6 @@ def start_view(sess: Session, res) -> None:
             if changed and not errors:
                 st.session_state.focus_note = f"Renamed {changed} label{'s' if changed != 1 else ''}"
                 st.rerun()
-    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
-    label("Add files to this set")
-    add_documents_form(sess, "start_add")
 
 
 # --------------------------------------------------------------------------- review
