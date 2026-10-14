@@ -5,6 +5,7 @@
 name: _base
 
 settings:
+  role_labels: true              # label entities by role from context ("Defendant", "Buyer") instead of "Company B"
   date_mode: month_year          # month_year | shifted | relative | exact   (edge case 2.3)
   public_companies: review       # review | keep | redact                      (edge case 1.1)
 
@@ -73,6 +74,46 @@ party_cues:
     - '^[^.\n]{0,25}\((?:the\s+|collectively,?\s+)?[“"](?:Company|Buyer|Seller|Purchaser|Target|Parent|Merger Sub|Borrower|Lender|Client|Issuer|Registrant|Acquirer|Guarantor|Employer|Licensee|Licensor|Plaintiff|Defendant|Respondent)[”"]'
   before:  # right before the name
     - '(?i)(?:acquire|acquisition of|merger with|merge with|agreement with|on behalf of|our client,?|advised|represented|engaged by|counsel to|investment in|offer for|bid for|tender offer for|against)\s+(?:the\s+)?$'
+
+# Context tool — role labels: when "Label by role" is on, an entity's pseudonym comes from the role the
+# documents give it ("Defendant", "Buyer", "Target"…) instead of "Company B". First matching rule wins;
+# two entities with the same role become "Defendant A", "Defendant B". (?P<role>…) is used as the label when
+# a rule has no fixed `role`.
+role_labels:
+  # Defined terms: Name (“Buyer”) · Name (the “Company”) · Name (“Asudani” or “Defendant”)
+  - where: after
+    pattern: '^[^.\n]{0,25}\((?:the\s+|collectively,?\s+)?(?:[“"][^”"\n]{1,40}[”"]\s+or\s+(?:the\s+)?)?[“"](?P<role>Relief Defendant|Defendant|Plaintiff|Respondent|Company|Buyer|Seller|Purchaser|Target|Parent|Merger Sub|Borrower|Lender|Client|Issuer|Registrant|Acquirer|Guarantor|Employer|Employee|Licensee|Licensor|Adviser|Advisor|Trustee|Agent|Investor|Fund)s?[”"]'
+  # Case captions: "JONATHAN R. MERCER, Defendant." / "…, Respondent." / "Relief Defendants."
+  - where: after
+    pattern: '^,?\s*\n?\s*(?P<role>Relief Defendants?|Defendants?|Respondents?|Plaintiffs?)\s*[.,]'
+  - where: after   # "MERCER and HARBORVIEW CAPITAL PARTNERS LLC, Defendants." — the first name is one too
+    pattern: '^\s+and\s+[^\n]{1,80}?,?\s*\n\s*(?P<role>Relief Defendants|Defendants|Respondents)\s*[.,]'
+  - where: after
+    pattern: '^\s*\(?\s*(?:\n\s*)?\(Exact name of registrant'
+    role: Registrant
+  - where: before
+    pattern: '(?i)(?:will acquire|to acquire|agreed to acquire|acquisition of|tender offer for|bid for|offer for)\s+(?:the\s+)?$'
+    role: Target
+    types: [ORGANIZATION]
+  - where: before
+    pattern: '(?i)(?:our client,?|advised|on behalf of|engaged by|counsel to|retained by)\s+(?:the\s+)?$'
+    role: Client
+  - where: before
+    pattern: '(?i)(?:agreement with|merger with|contract with|transaction with|deal with)\s+(?:the\s+)?$'
+    role: Counterparty
+    types: [ORGANIZATION]
+  - where: before
+    pattern: '(?i)(?:held at|account at|accounts at|deposited (?:at|with)|custodied at|wired (?:from|to)[^.\n]{0,60}\bat)\s+$'
+    role: Bank
+    types: [ORGANIZATION]
+  - where: after
+    pattern: '(?i)^[^.\n]{0,40}?\s+(?:will acquire|has agreed to acquire|agreed to acquire|is acquiring|acquired)\b'
+    role: Acquirer
+    types: [ORGANIZATION]
+  # Descriptors: "Harborview, an investment adviser registered…" · "Tailspin, a private carrier"
+  - where: after
+    pattern: '(?i)^[^.\n]{0,4},?\s+(?:is\s+)?(?:an?|the)\s+(?:registered\s+|private\s+|public(?:ly traded)?\s+)?(?P<role>investment adviser|broker-dealer|hedge fund|private equity fund|asset manager|bank|carrier|pharmaceutical company|law firm|accounting firm|auditor|insurer|exchange|startup|manufacturer|distributor|retailer)\b'
+    types: [ORGANIZATION]
 
 # Mail providers and platforms: an address there says nothing about the company (context tool: domain linking).
 generic_domains: [gmail, googlemail, yahoo, outlook, hotmail, live, msn, icloud, me, aol, protonmail, proton, gmx,

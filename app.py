@@ -299,12 +299,25 @@ def replacement_picker(res, item, key: str, default: str) -> tuple[str, str]:
     return "existing", choice
 
 
-def apply_replacement(sess: Session, res, item_key: str, item, kind: str, value: str) -> None:
+def apply_replacement(sess: Session, res, item_key: str, item, kind: str, value: str) -> bool:
+    """Existing label → join that entity. New text → for an entity, rename its label (so the registry and every
+    document agree); for a flag, use the text as its replacement. Returns False if the label is taken."""
     if kind == "existing":
         merge_into(sess, item, res.entity(value))
+    elif hasattr(item, "variants") and value.strip() and value.strip() != item.label:
+        try:
+            sess.rename(item.key, value)
+        except ValueError as exc:
+            st.error(str(exc))
+            return False
+        sess.decide(item_key, "accept")
+        st.session_state.focus_note = f"{item.canonical} is now “{value.strip()}” in every document"
+    elif hasattr(item, "variants"):
+        sess.decide(item_key, "accept")
     else:
         sess.decide(item_key, "edit", value.strip() or item.proposed)
     st.session_state.editing = False
+    return True
 
 
 _ABBR = re.compile(r"\b(?:Mr|Mrs|Ms|Dr|No|Nos|Inc|Co|Corp|Ltd|Jr|Sr|St|v|vs|U\.S|[A-Z])$")
@@ -470,6 +483,11 @@ def sidebar(sess: Session, res) -> None:
         label("Options")
         date_modes = {"month_year": "Month + year (March 2022)", "shifted": "Shifted — same gaps, hidden offset",
                       "relative": "Relative — Day 0, Day 6…", "exact": "Exact (no change)"}
+        st.session_state.setdefault("t_roles", bool(s.get("role_labels", False)))
+        st.toggle("Label by role (Defendant, Buyer…)", key="t_roles",
+                  help="Uses context — defined terms, case captions, 'will acquire', 'our client', 'held at' — to "
+                       "label entities by role instead of Company A / Company B. Your own renames always win.")
+        s["role_labels"] = st.session_state.t_roles
         st.session_state.setdefault("t_dates", s.get("date_mode", "month_year"))
         st.selectbox("Dates", list(date_modes), key="t_dates", format_func=date_modes.get,
                      help="Shifted and relative keep the order and spacing of events (e.g. trades before an alert).")
@@ -502,6 +520,18 @@ def sidebar(sess: Session, res) -> None:
                             for f, _, n, _, _ in forms_of(e)), unsafe_allow_html=True)
                         docs = sorted({m[0] for m in e.mentions})
                         st.caption(f"In: {', '.join(sess.names[d] for d in docs)} · {e.rule}")
+                        if e.is_redacted and not e.nick_target:
+                            r1, r2 = st.columns([2.2, 1], vertical_alignment="bottom")
+                            new = r1.text_input("Label", e.label, key=f"lbl-{e.key}",
+                                                help="Becomes this entity's pseudonym in every document.")
+                            if r2.button("Rename", key=f"rn-{e.key}", width="stretch") and new.strip() != e.label:
+                                try:
+                                    sess.rename(e.key, new)
+                                    st.session_state.focus = e.key
+                                    st.session_state.focus_note = f"{e.canonical} is now “{new.strip()}”"
+                                    st.rerun()
+                                except ValueError as exc:
+                                    st.error(str(exc))
                         st.markdown('<p class="ll-sub">Split a form off</p>', unsafe_allow_html=True)
                         split_controls(sess, res, e, f"sb-{e.key}")
                         others = [o for o in res.entities if o.key != e.key and o.is_redacted]
@@ -564,6 +594,33 @@ def start_view(sess: Session, res) -> None:
               on_click=lambda: st.session_state.update(view="Review"))
     c2.button("Start a new set", width="stretch", on_click=reset,
               help="Clears this set and every decision — download what you need first.")
+    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+    label("Labels")
+    st.caption("Rename any pseudonym — e.g. Company B → Receiving bank, Person A → Defendant. Each label is used "
+               "for that entity in every document. Labels must be unique (to combine two entities, merge them).")
+    ents = [e for e in res.entities if e.is_redacted and e.type in ("PERSON", "ORGANIZATION", "MANUAL")
+            and not e.nick_target]
+    table = pd.DataFrame([{"label": e.label, "type": type_name(e.type), "examples": examples(e),
+                           "documents": len({m[0] for m in e.mentions}), "_key": e.key} for e in ents])
+    if not table.empty:
+        edited = st.data_editor(table, hide_index=True, width="stretch", key="labels_editor",
+                                column_order=["label", "type", "examples", "documents"],
+                                disabled=["type", "examples", "documents"],
+                                column_config={"label": st.column_config.TextColumn("Label", required=True)})
+        if st.button("Apply labels", type="primary", key="apply_labels"):
+            errors, changed = [], 0
+            for (_, before), (_, after) in zip(table.iterrows(), edited.iterrows()):
+                if str(after["label"]).strip() and str(after["label"]).strip() != before["label"]:
+                    try:
+                        sess.rename(before["_key"], str(after["label"]))
+                        changed += 1
+                    except ValueError as exc:
+                        errors.append(str(exc))
+            for err in errors:
+                st.error(err)
+            if changed and not errors:
+                st.session_state.focus_note = f"Renamed {changed} label{'s' if changed != 1 else ''}"
+                st.rerun()
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     label("Add documents to this set")
     add_documents_form(sess, "start_add")
@@ -654,11 +711,11 @@ def review(sess: Session, res) -> None:
                 f'<span class="dim">×{cnt} · {html.escape(", ".join(res.names[d] for d in fdocs))}</span>'
                 f'<div class="form-ctx">{context_html(res, md, ms, me, neighbours=False)}</div></div>',
                 unsafe_allow_html=True)
-        kind, value = replacement_picker(res, item, f"rp-{key}", item.proposed)
+        kind, value = replacement_picker(res, item, f"rp-{key}", getattr(item, "label", "") or item.proposed)
         b1, b2, _ = st.columns([1.2, 1, 3], vertical_alignment="bottom")
         if b1.button("Apply to all forms", type="primary", width="stretch"):
-            apply_replacement(sess, res, key, item, kind, value)
-            st.rerun()
+            if apply_replacement(sess, res, key, item, kind, value):
+                st.rerun()
         if b2.button("Cancel", width="stretch"):
             st.session_state.editing = False
             st.rerun()
@@ -884,11 +941,12 @@ def edit_dialog(sess: Session, res, ref: str) -> None:
         f'{html.escape(", ".join(res.names[d] for d in docs))}</span></div>' for f, _, n, docs, _ in forms),
         unsafe_allow_html=True)
     st.caption(f"Now shown as “{current}”. Rule: {item.rule}. Changes apply to every occurrence.")
-    kind, value = replacement_picker(res, item, f"ed-{ref}", item.custom or item.proposed)
+    kind, value = replacement_picker(res, item, f"ed-{ref}",
+                                     item.custom or (item.label if not is_flag else "") or item.proposed)
     c1, c2, c3 = st.columns(3)
     if c1.button("Save", type="primary", width="stretch"):
-        apply_replacement(sess, res, ref, item, kind, value)
-        st.rerun()
+        if apply_replacement(sess, res, ref, item, kind, value):
+            st.rerun()
     if c2.button("Keep original", width="stretch"):
         sess.decide(ref, "keep")
         st.rerun()

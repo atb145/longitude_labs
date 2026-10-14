@@ -59,6 +59,12 @@ class Session:
     def add_files(self, files: list[tuple[str, bytes]]) -> list[str]:
         """Add documents to this set. They join the same registry, so names already seen keep their pseudonyms
         and every earlier decision still applies. Returns the names as stored (duplicates get " (2)")."""
+        # Freeze the pseudonyms already in use: a new file may reveal a role or a fuller name, but the
+        # documents a reviewer has already seen (or approved) must not change underneath them.
+        labels = self.ops.setdefault("labels", {})
+        for e in self.run().entities:
+            if e.label not in ("", "Kept") and not e.nick_target:
+                labels.setdefault(e.key, e.label)
         added = []
         offset = len(self.texts)
         new_texts = []
@@ -106,6 +112,16 @@ class Session:
         self.ops.setdefault("manual", []).append(
             {"text": text, "type": entity_type, "replacement": replacement, "label": label})
 
+    def rename(self, entity_key: str, label: str) -> None:
+        """Give an entity a label of your choice ("Defendant", "Receiving company"); it becomes its pseudonym in
+        every document. Raises ValueError if another entity already uses that label."""
+        label = " ".join(label.split())
+        taken = {e.label.lower(): e for e in self.run().entities if e.key != entity_key}
+        if label.lower() in taken:
+            raise ValueError(f"“{label}” is already the label of {taken[label.lower()].canonical}. Pick that "
+                             "entity from the dropdown to merge them, or choose another label.")
+        self.ops.setdefault("labels", {})[entity_key] = label
+
     def set_parties(self, parties: list[dict]) -> None:
         """Known parties ({"name", "type"}): always redacted with every variant (context tool)."""
         self.ops["parties"] = [p for p in parties if str(p.get("name", "")).strip()]
@@ -119,7 +135,7 @@ class Session:
         new = cls.from_texts(list(zip(old.names, old.texts)), policy)
         ops = dict(getattr(old, "ops", {}) or {})
         for k, default in (("decisions", {}), ("history", []), ("merges", []), ("splits", []), ("manual", []),
-                           ("deleted", []), ("aliases", []), ("parties", [])):
+                           ("deleted", []), ("aliases", []), ("parties", []), ("labels", {})):
             ops.setdefault(k, default)
         new.ops = ops
         new.approved = dict(getattr(old, "approved", {}) or {})

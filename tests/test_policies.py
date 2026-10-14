@@ -249,3 +249,45 @@ def test_delete_entity_removes_false_positive():
     res2 = s.run()
     assert entity(res2, "Meridian") is None and "Meridian Clearing" in res2.outputs[0]
     assert any(r["decision"] == "deleted" for r in redaction_log(res2))
+
+
+# ---------------------------------------------------------------- labels
+def test_role_labels_from_context():
+    memo = (FIX / "advisory_memo.txt").read_text()
+    _, res = run([("memo.txt", memo)], role_labels=True)
+    labels = {e.canonical: e.label for e in res.entities}
+    assert labels["Northwind Traders Inc."] == "Client"
+    assert labels["Tailspin Logistics"] == "Target"
+    assert labels["Fabrikam Holdings"] == "Counterparty"
+    assert "Northwind" not in res.outputs[0] and "Client" in res.outputs[0]
+
+
+def test_role_labels_caption_two_defendants_and_no_gaps():
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    _, res = run(docs, role_labels=True)
+    labels = {e.canonical: e.label for e in res.entities}
+    assert labels["Jonathan R. Mercer"] == "Defendant A" and labels["Harborview Capital Partners LLC"] == "Defendant B"
+    assert labels["Daniel K. Okafor"] == "Respondent"
+    companies = sorted(l for l in labels.values() if l.startswith("Company "))
+    assert companies == [f"Company {c}" for c in "ABCD"[:len(companies)]]   # no gaps
+    assert consistency_check(res)["all_consistent"]
+
+
+def test_role_labels_off_gives_letters():
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    _, res = run(docs, role_labels=False)
+    assert all(e.label.split()[0] in ("Person", "Company", "Kept") for e in res.entities
+               if e.type in ("PERSON", "ORGANIZATION"))
+
+
+def test_rename_label_everywhere_and_unique():
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    s, res = run(docs, role_labels=False)
+    northgate = entity(res, "Northgate")
+    s.rename(northgate.key, "Receiving broker")
+    res2 = s.run()
+    assert all("Receiving broker" in out for i, out in enumerate(res2.outputs)
+               if any(m[0] == i for m in entity(res2, "Northgate").mentions))
+    other = entity(res2, "Harborview")
+    with pytest.raises(ValueError):
+        s.rename(other.key, "receiving broker")      # labels stay unique (case-insensitive)

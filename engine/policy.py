@@ -39,6 +39,7 @@ class Policy:
     quasi: dict = field(default_factory=dict)          # {"min_categories": int, "categories": {name: [regex]}}
     party_cues: dict = field(default_factory=dict)     # {"before": [regex], "after": [regex]}
     generic_domains: set[str] = field(default_factory=set)
+    role_rules: list[dict] = field(default_factory=list)  # {"where", "regex", "role", "types"}
 
     def spec(self, entity_type: str) -> dict:
         return self.entities.get(entity_type, {"action": "ignore"})
@@ -121,6 +122,7 @@ def _merge_base(raw: dict) -> dict:
     cues_b, cues_r = base.get("party_cues") or {}, raw.get("party_cues") or {}
     out["party_cues"] = {k: list(cues_b.get(k) or []) + list(cues_r.get(k) or []) for k in ("before", "after")}
     out["generic_domains"] = list(base.get("generic_domains") or []) + list(raw.get("generic_domains") or [])
+    out["role_labels"] = list(raw.get("role_labels") or []) + list(base.get("role_labels") or [])  # pack rules first
     return out
 
 
@@ -172,6 +174,8 @@ def parse_policy(raw: dict, fallback_name: str) -> Policy:
         nicknames={k.lower(): [v.lower() for v in vs] for k, vs in (raw.get("nicknames") or {}).items()},
         party_cues={k: [re.compile(p) for p in v] for k, v in (raw.get("party_cues") or {}).items()},
         generic_domains={d.lower() for d in raw.get("generic_domains") or []},
+        role_rules=[{"where": r.get("where", "after"), "regex": re.compile(r["pattern"]), "role": r.get("role"),
+                     "types": set(r.get("types") or ["PERSON", "ORGANIZATION"])} for r in raw.get("role_labels") or []],
         quasi={"min_categories": int((raw.get("quasi_identifiers") or {}).get("min_categories", 3)),
                "categories": {k: [re.compile(p) for p in v]
                               for k, v in ((raw.get("quasi_identifiers") or {}).get("categories") or {}).items()}},
