@@ -34,89 +34,89 @@ entities:
     action: redact
     label: "Person {A}"
     rule: always_redact.person_names
-    reason: Person names are always redacted.
+    reason: Names are always redacted.
   ORGANIZATION:
     title: Private organizations
     action: redact
     label: "Company {A}"
     rule: always_redact.private_organizations
-    reason: Private organizations can identify the parties, so they are redacted unless on the keep list.
+    reason: Private organizations identify the parties.
   ACCOUNT_NUMBER:
     title: Account numbers
     action: redact
     label: "Account {1}"
     rule: always_redact.account_numbers
-    reason: Bank and brokerage account numbers are always redacted.
+    reason: Account numbers are always redacted.
     auto: true
   CRD_NUMBER:
     title: CRD numbers
     action: redact
     label: "CRD {1}"
     rule: always_redact.crd_numbers
-    reason: FINRA CRD numbers identify an individual or firm in BrokerCheck.
+    reason: Searchable in BrokerCheck.
     auto: true
   CUSIP:
     title: CUSIPs
     action: redact
     label: "CUSIP {1}"
     rule: always_redact.security_identifiers
-    reason: A CUSIP pins down the exact security traded, which can identify the case.
+    reason: Pins down the security traded.
     auto: true
   TICKER:
     title: Tickers
     action: redact
     label: "Ticker {A}"
     rule: always_redact.security_identifiers
-    reason: A ticker pins down the exact security traded, which can identify the case.
+    reason: Pins down the security traded.
     auto: true
   CASE_NUMBER:
     title: Case / docket numbers
     action: redact
     label: "Case {1}"
     rule: always_redact.case_numbers
-    reason: Case and docket numbers are directly searchable in public court and SEC records.
+    reason: Searchable in court and SEC records.
     auto: true
   EMAIL_ADDRESS:
     title: Email addresses
     action: redact
     label: "Email {1}"
     rule: always_redact.emails
-    reason: Email addresses are always redacted.
+    reason: Always redacted.
     auto: true
   PHONE_NUMBER:
     title: Phone numbers
     action: redact
     label: "Phone {1}"
     rule: always_redact.phones
-    reason: Phone numbers are always redacted.
+    reason: Always redacted.
     auto: true
   TAX_ID:
     title: Tax / employer IDs (EIN)
     action: redact
     label: "Tax ID {1}"
     rule: always_redact.tax_ids
-    reason: An employer identification number points to exactly one company.
+    reason: Identifies exactly one company.
     auto: true
   US_SSN:
     title: Social Security numbers
     action: redact
     label: "SSN {1}"
     rule: always_redact.ssns
-    reason: Social Security numbers are always redacted.
+    reason: Always redacted.
     auto: true
   STREET_ADDRESS:
     title: Street addresses
     action: generalize
     label: "Address {1}"
     rule: generalize.street_addresses
-    reason: Street addresses are generalized to city and state.
+    reason: Generalized to city and state.
     auto: true
   DATE:
     title: Dates → month + year
     action: generalize
     label: "Date {1}"
     rule: generalize.dates
-    reason: Exact dates are generalized to month and year.
+    reason: Generalized to month and year.
     auto: true
   LOCATION: { action: ignore }   # cities / states stay — they are what addresses generalize to
   NRP: { action: ignore }
@@ -244,23 +244,23 @@ flag_for_review:
   - id: flag.family_relationship
     pattern: '(?i)\b(?P<v>(?:his|her|their|the)\s+(?:brother|sister|father|mother|son|daughter|cousin|uncle|aunt|nephew|niece|husband|wife|spouse|partner|fianc[eé]e?)(?:-in-law)?)\b'
     replacement: a relative
-    reason: A family relationship can re-identify someone even after their name is removed.
+    reason: A relative can re-identify someone.
   - id: flag.family_relationship
     pattern: '(?i)\bthe\s+(?P<v>(?:brother|sister|father|mother|son|daughter|cousin)-in-law)\s+of\b'
     replacement: a relative
-    reason: A family relationship can re-identify someone even after their name is removed.
+    reason: A relative can re-identify someone.
   - id: flag.family_relationship
     pattern: '(?i)(?<=[\x27’]s\s)(?P<v>(?:brother|sister|father|mother|son|daughter|husband|wife|spouse)(?:-in-law)?)\b'
     replacement: relative
-    reason: A family relationship can re-identify someone even after their name is removed.
+    reason: A relative can re-identify someone.
   - id: flag.role_at_named_entity
     pattern: '(?i)\b(?P<v>the\s+(?:company|firm|fund|adviser|bank)[\x27’]s\s+(?:CEO|CFO|COO|CCO|CIO|general counsel|chief [a-z]+ officer|founder|chairman|treasurer))\b'
     replacement: a senior executive
-    reason: A unique job title at a known firm points to exactly one person.
+    reason: A unique title points to one person.
   - id: flag.role_at_named_entity
     pattern: '(?i)\b(?P<v>(?:the\s+)?(?:former\s+)?(?:chief (?:executive|financial|operating|compliance|investment) officer|managing partner|general counsel))\b'
     replacement: a senior executive
-    reason: A unique job title at a known firm points to exactly one person.
+    reason: A unique title points to one person.
 
 # ---------------------------------------------------------------------------
 # EDGE CASES — [MY TASK 1 EDGE CASES GO HERE AS ADDITIONAL RULES]

@@ -53,11 +53,9 @@ def _pdf(data: bytes) -> Extracted:
             text = page.extract_text() or ""
             if page.images:
                 text += f"\n[Image removed: page {i}, {len(page.images)} image(s)]"
-                warnings.append({"level": "info", "message": f"Page {i}: {len(page.images)} image(s) removed from "
-                                 "the output; faces, badges, signatures or logos in them were not checked."})
+                warnings.append({"level": "info", "message": f"Page {i}: {len(page.images)} image(s) removed, not checked."})
             if not text.strip() or (page.images and len((page.extract_text() or "").strip()) < 20):
-                warnings.append({"level": "block", "message": f"Page {i} has no text layer (likely a scan). "
-                                 "It can't be checked without OCR — remove the page or supply a text PDF."})
+                warnings.append({"level": "block", "message": f"Page {i} has no text (scan?). Remove it or use a text PDF."})
             pages.append(text)
         meta = {k: v for k, v in (pdf.metadata or {}).items() if k in ("Author", "Title", "Subject")  # Creator/Producer name software
                 and isinstance(v, str) and v.strip()}
@@ -115,11 +113,9 @@ def _docx(data: bytes) -> Extracted:
         media = [n for n in names if n.startswith("word/media/")]
         if media:
             parts.append(f"[Images removed: {len(media)}]")
-            warnings.append({"level": "info", "message": f"{len(media)} embedded image(s) removed from the output; "
-                             "faces, badges, signatures, QR codes or logos in them were not checked."})
+            warnings.append({"level": "info", "message": f"{len(media)} image(s) removed, not checked."})
         if any(n.startswith("word/embeddings/") for n in names):
-            warnings.append({"level": "info", "message": "Embedded objects (e.g. chart workbooks) were dropped; "
-                             "their hidden data is not in the output."})
+            warnings.append({"level": "info", "message": "Embedded objects (e.g. chart data) removed."})
 
     props = document.core_properties
     meta = {k: getattr(props, k) for k in ("author", "last_modified_by", "title", "subject", "comments")

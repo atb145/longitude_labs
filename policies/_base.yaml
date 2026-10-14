@@ -15,21 +15,21 @@ entities:
     action: redact
     label: "Website {1}"
     rule: always_redact.websites
-    reason: A company's own website or domain names it.
+    reason: A website names the company.
     auto: true
   MONEY:
     title: Headline figures → rounded
     action: generalize
     label: "Amount {1}"
     rule: generalize.figures
-    reason: Exact headline amounts are searchable in public releases; they are rounded, never noised.
+    reason: Exact amounts are searchable; rounded, never noised.
     auto: true
   SHARE_COUNT:
     title: Share counts → rounded
     action: generalize
     label: "Shares {1}"
     rule: generalize.figures
-    reason: Exact share counts are searchable in public releases; they are rounded, never noised.
+    reason: Exact counts are searchable; rounded, never noised.
     auto: true
 
 recognizers:
@@ -182,15 +182,13 @@ flag_for_review:
     scope: sentence
     pattern: '(?i)\b(?:all|both|each of the|every one of the|the entire)\s+(?:\w+\s+){0,2}(?:analysts|traders|employees|members|partners|directors|staff|nurses|physicians|associates)\s+(?:on|of|at|in)\s+the\s+(?:\w+\s+){0,3}(?:desk|team|office|group|branch|unit|ward|department)\b'
     replacement: Several employees in one team were affected.
-    reason: The sentence implicates every member of a small, named group — each of them is identifiable without a name.
+    reason: Implicates every member of a small group.
   # Release & rights 4.2: anonymizing does not cure privilege or client confidentiality.
   - id: rights.privileged
     scope: sentence
     pattern: '(?i)\b(?:attorney[- ]client|privileged(?: (?:and|&) confidential)?|work product|we (?:recommend|advise) (?:that the client )?settl\w*|(?:the |our )?client[’'']s exposure|under (?:the |a )?NDA|subject to (?:a |the )?non-disclosure|protected health information|patient (?:record|chart)s?)\b'
     replacement: "[Withheld: possibly privileged or client-confidential]"
-    reason: >-
-      Possibly privileged or client-confidential. Anonymizing doesn't cure it — a lawyer can't waive the
-      client's confidentiality. Keep only if the rights holder consented (and say so); otherwise withhold.
+    reason: May be privileged or confidential. Keep only with the rights holder's consent.
 
 # Quasi-identifier combinations (2.1 rare profile, 2.2 unique role + place + event): a sentence that
 # combines several of these attributes goes to the review queue, even with every name removed.
