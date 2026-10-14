@@ -327,3 +327,23 @@ def test_record_links_redacted_general_links_reviewed():
     general = links["https://www.sec.gov/investor"]
     assert general.status == "pending"
     assert "guidance." in res.outputs[0]       # the sentence's full stop isn't swallowed by the link
+
+
+def test_address_uses_document_caption_and_zip_is_redacted():
+    data = (FIX / "msft_8k_2022-01-18.htm").read_bytes()
+    s = Session.from_files([("8k.htm", data)])
+    res = s.run()
+    out = res.outputs[0]
+    assert "Redmond" not in out and "98052" not in out
+    assert "Address of principal executive offices" in out
+
+
+def test_renaming_an_address_overrides_city_state():
+    data = (FIX / "msft_8k_2022-01-18.htm").read_bytes()
+    s = Session.from_files([("8k.htm", data)])
+    s.settings["role_labels"] = False
+    addr = next(e for e in s.run().entities if e.type == "STREET_ADDRESS")
+    assert addr.proposed.startswith("Redmond")          # city/state by default when context labels are off
+    s.rename(addr.key, "Address 1")
+    out = s.run().outputs[0]
+    assert "Address 1" in out and "Redmond" not in out

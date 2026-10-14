@@ -166,6 +166,9 @@ def inject_css() -> None:
     .stFormSubmitButton button:hover { background:#8fcbe4 !important; border-color:#8fcbe4 !important; }
     [data-testid="stFileUploaderDropzone"] { border:1px dashed var(--rule); background:transparent; border-radius:1rem; }
     [data-testid="stSidebar"] .ll-label { margin-top:1.2rem; }
+    .sb-title { font-size:.8rem; font-weight:600; color:var(--dim); margin:.2rem 0 .8rem; letter-spacing:.02em; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] { margin-bottom:.15rem; }
+    [data-testid="stSidebar"] [data-testid="stExpander"] summary p { font-weight:600; }
     /* narrow content area (small window or sidebar open) — last, so it wins */
     @container (max-width: 760px) {
       .ll-coord { display: none; }
@@ -454,28 +457,83 @@ def forms_of(ent) -> list[tuple[str, str, int, list[int], tuple]]:
     return [(f, v, n, sorted(d), first) for f, v, n, d, first in out.values()]
 
 
-def sidebar(sess: Session, res) -> None:
-    focus = st.session_state.get("focus")
-    with st.sidebar:
-        label("Policy", sess.policy.name)
-        with st.expander("Change policy pack"):
-            policies = available_policies()
-            pick = st.selectbox("Built-in pack", list(policies), key="swap_pick")
-            up = st.file_uploader("Or upload a policy (.yaml)", type=["yaml", "yml"], key="swap_upload")
-            if st.button("Apply policy", width="stretch"):
+def entity_popover(sess: Session, res, e, focus) -> None:
+    status = {"pending": " · review", "setting": " · off", "manual": " · manual"}.get(e.status, "")
+    mark = "● " if e.key == focus else ""
+    with st.popover(f"{mark}{e.label} — {e.canonical[:26]} · {len(e.mentions)}×{status}", width="stretch"):
+        st.markdown("<br>".join(f"<span class='form'>{html.escape(f)}</span> <span class='dim'>×{n}</span>"
+                                for f, _, n, _, _ in forms_of(e)), unsafe_allow_html=True)
+        docs = sorted({m[0] for m in e.mentions})
+        st.caption(f"In: {', '.join(sess.names[d] for d in docs)} · {e.rule}")
+        if e.is_redacted and not e.nick_target:
+            r1, r2 = st.columns([2.2, 1], vertical_alignment="bottom")
+            new = r1.text_input("Label", e.label, key=f"lbl-{e.key}", help="Used in every document.")
+            if r2.button("Rename", key=f"rn-{e.key}", width="stretch") and new.strip() != e.label:
                 try:
-                    pol = (load_policy_text(up.getvalue().decode("utf-8"), Path(up.name).stem) if up
-                           else load_policy(policies[pick]))
-                    swap_policy(sess, pol)
+                    sess.rename(e.key, new)
+                    st.session_state.focus = e.key
+                    st.session_state.focus_note = f"{e.canonical} is now “{new.strip()}”"
                     st.rerun()
-                except (ValueError, UnicodeDecodeError) as exc:
+                except ValueError as exc:
                     st.error(str(exc))
-            st.caption("Your decisions are kept.")
+        st.markdown('<p class="ll-sub">Split a form off</p>', unsafe_allow_html=True)
+        split_controls(sess, res, e, f"sb-{e.key}")
+        others = [o for o in res.entities if o.key != e.key and o.is_redacted]
+        if others:
+            st.markdown('<p class="ll-sub">Merge into another entry</p>', unsafe_allow_html=True)
+            names = {o.key: f"{o.label} — e.g. {examples(o)}" for o in others}
+            tgt = st.selectbox("Merge into", list(names), key=f"mv-{e.key}", format_func=names.get,
+                               label_visibility="collapsed")
+            st.button("Merge", key=f"mb-{e.key}", on_click=merge_into, width="stretch",
+                      args=(sess, e, next(o for o in others if o.key == tgt)))
+        st.button("🗑 Delete entity", key=f"del-{e.key}", on_click=delete_entity, args=(sess, e),
+                  width="stretch", help="False detection: keep the text as written.")
 
-        label("Known parties")
-        with st.expander(f"Always redact these ({len(sess.ops.get('parties', []))})",
-                         expanded=not sess.ops.get("parties")):
-            st.caption("Client, counterparties, codenames. Always redacted, in every form.")
+
+def sidebar(sess: Session, res) -> None:
+    """Four collapsible sections: Settings · Known parties · Rules · Entities."""
+    focus = st.session_state.get("focus")
+    s = sess.settings
+    with st.sidebar:
+        st.markdown(f'<p class="sb-title">{html.escape(sess.policy.name)} policy · '
+                    f'{len(res.names)} document{"s" if len(res.names) != 1 else ""}</p>', unsafe_allow_html=True)
+
+        # ---- Settings
+        with st.expander("⚙ Settings"):
+            st.session_state.setdefault("t_roles", bool(s.get("role_labels", False)))
+            st.toggle("Label by role and context", key="t_roles",
+                      help="Defendant, Buyer, 'Address of principal executive offices'… instead of Company A.")
+            date_modes = {"month_year": "Month + year", "shifted": "Shifted (same gaps)",
+                          "relative": "Relative (Day 0, Day 6…)", "exact": "Exact"}
+            st.session_state.setdefault("t_dates", s.get("date_mode", "month_year"))
+            st.selectbox("Dates", list(date_modes), key="t_dates", format_func=date_modes.get)
+            pub_modes = {"review": "Ask if it's a party", "keep": "Always keep", "redact": "Always redact"}
+            st.session_state.setdefault("t_pub", s.get("public_companies", "review"))
+            st.selectbox("Public companies", list(pub_modes), key="t_pub", format_func=pub_modes.get)
+            st.session_state.setdefault("t_addr", s.get("generalize_addresses", True))
+            st.toggle("Addresses → city, state", key="t_addr", help="When the document gives no caption.")
+            with st.popover("Change policy pack", width="stretch"):
+                policies = available_policies()
+                pick = st.selectbox("Built-in pack", list(policies), key="swap_pick")
+                up = st.file_uploader("Or upload (.yaml)", type=["yaml", "yml"], key="swap_upload")
+                if st.button("Apply", width="stretch", key="swap_apply"):
+                    try:
+                        pol = (load_policy_text(up.getvalue().decode("utf-8"), Path(up.name).stem) if up
+                               else load_policy(policies[pick]))
+                        swap_policy(sess, pol)
+                        st.rerun()
+                    except (ValueError, UnicodeDecodeError) as exc:
+                        st.error(str(exc))
+                st.caption("Your decisions are kept.")
+        s["role_labels"] = st.session_state.t_roles
+        s["date_mode"] = st.session_state.t_dates
+        s["public_companies"] = st.session_state.t_pub
+        s["generalize_addresses"] = st.session_state.t_addr
+
+        # ---- Known parties
+        n_parties = len(sess.ops.get("parties", []))
+        with st.expander(f"Known parties ({n_parties})"):
+            st.caption("Client, counterparties, codenames — always redacted.")
             kinds = ["ORGANIZATION", "PERSON", "MANUAL"]
             current = pd.DataFrame(sess.ops.get("parties") or [], columns=["name", "type"])
             edited = st.data_editor(
@@ -486,90 +544,44 @@ def sidebar(sess: Session, res) -> None:
             if st.button("Apply parties", width="stretch"):
                 sess.set_parties([{"name": str(r["name"]).strip(), "type": r["type"] or "ORGANIZATION"}
                                   for r in edited.to_dict("records") if r.get("name") and str(r["name"]).strip()])
-                st.session_state.focus_note = "Known parties applied to every document"
+                st.session_state.focus_note = "Known parties applied"
                 st.rerun()
 
-        s = sess.settings
-        label("Rule buckets")
-        disabled = []
+        # ---- Rules
         groups: dict[str, list] = {}
         for group, bid, title, help_ in sess.policy.buckets():
             groups.setdefault(group, []).append((bid, title, help_))
-        for group, items in groups.items():
-            for bid, _, _ in items:
-                st.session_state.setdefault(f"b_{bid}", bid not in s.get("disabled", []))
-            with st.expander(f"{group} ({len(items)})", expanded=False):  # static label keeps it open while toggling
+            st.session_state.setdefault(f"b_{bid}", bid not in s.get("disabled", []))
+        with st.expander("Rules"):  # static label so it stays open while toggling
+            for group, items in groups.items():
+                st.markdown(f'<p class="ll-sub">{html.escape(group)}</p>', unsafe_allow_html=True)
                 for bid, title, help_ in items:
                     st.toggle(title, key=f"b_{bid}", help=help_ or None)
-            disabled += [bid for bid, _, _ in items if not st.session_state[f"b_{bid}"]]
-        s["disabled"] = disabled
+        s["disabled"] = [bid for items in groups.values() for bid, _, _ in items if not st.session_state[f"b_{bid}"]]
 
-        label("Options")
-        date_modes = {"month_year": "Month + year (March 2022)", "shifted": "Shifted — same gaps, hidden offset",
-                      "relative": "Relative — Day 0, Day 6…", "exact": "Exact (no change)"}
-        st.session_state.setdefault("t_roles", bool(s.get("role_labels", False)))
-        st.toggle("Label by role (Defendant, Buyer…)", key="t_roles",
-                  help="Reads roles from the text instead of Company A, B. Your renames win.")
-        s["role_labels"] = st.session_state.t_roles
-        st.session_state.setdefault("t_dates", s.get("date_mode", "month_year"))
-        st.selectbox("Dates", list(date_modes), key="t_dates", format_func=date_modes.get,
-                     help="Shifted and relative keep the gaps between events.")
-        pub_modes = {"review": "Ask if it's a party (review)", "keep": "Always keep", "redact": "Always redact"}
-        st.session_state.setdefault("t_pub", s.get("public_companies", "review"))
-        st.selectbox("Public companies", list(pub_modes), key="t_pub", format_func=pub_modes.get,
-                     help="Keep a public name only if it isn't a party.")
-        st.session_state.setdefault("t_addr", s.get("generalize_addresses", True))
-        st.toggle("Addresses → city, state", key="t_addr", help="Off: replace the whole address.")
-        s["date_mode"] = st.session_state.t_dates
-        s["public_companies"] = st.session_state.t_pub
-        s["generalize_addresses"] = st.session_state.t_addr
-
-        label("Entities", f"{len(res.entities)}")
+        # ---- Entities
         by_type: dict[str, list] = {}
         for e in res.entities:
             by_type.setdefault(e.type, []).append(e)
-        for etype, ents in by_type.items():
-            review_n = sum(e.status == "pending" for e in ents)
-            open_ = any(e.key == focus for e in ents)
-            with st.expander(f"{type_name(etype)} ({len(ents)}{f' · {review_n} to review' if review_n else ''})",
-                             expanded=open_):
-                for e in ents:
-                    status = {"pending": " · review", "setting": " · off", "manual": " · manual"}.get(e.status, "")
-                    mark = "● " if e.key == focus else ""
-                    with st.popover(f"{mark}{e.label} — {e.canonical[:28]} · {len(e.mentions)}×{status}",
-                                    width="stretch"):
-                        st.markdown("<br>".join(
-                            f"<span class='form'>{html.escape(f)}</span> <span class='dim'>×{n}</span>"
-                            for f, _, n, _, _ in forms_of(e)), unsafe_allow_html=True)
-                        docs = sorted({m[0] for m in e.mentions})
-                        st.caption(f"In: {', '.join(sess.names[d] for d in docs)} · {e.rule}")
-                        if e.is_redacted and not e.nick_target:
-                            r1, r2 = st.columns([2.2, 1], vertical_alignment="bottom")
-                            new = r1.text_input("Label", e.label, key=f"lbl-{e.key}",
-                                                help="Used in every document.")
-                            if r2.button("Rename", key=f"rn-{e.key}", width="stretch") and new.strip() != e.label:
-                                try:
-                                    sess.rename(e.key, new)
-                                    st.session_state.focus = e.key
-                                    st.session_state.focus_note = f"{e.canonical} is now “{new.strip()}”"
-                                    st.rerun()
-                                except ValueError as exc:
-                                    st.error(str(exc))
-                        st.markdown('<p class="ll-sub">Split a form off</p>', unsafe_allow_html=True)
-                        split_controls(sess, res, e, f"sb-{e.key}")
-                        others = [o for o in res.entities if o.key != e.key and o.is_redacted]
-                        if others:
-                            st.markdown('<p class="ll-sub">Or merge the whole entry</p>', unsafe_allow_html=True)
-                            names = {o.key: f"{o.label} — e.g. {examples(o)}" for o in others}
-                            tgt = st.selectbox("Merge into", list(names), key=f"mv-{e.key}", format_func=names.get)
-                            st.button("Merge", key=f"mb-{e.key}", on_click=merge_into, width="stretch",
-                                      args=(sess, e, next(o for o in others if o.key == tgt)))
-                        st.markdown('<p class="ll-sub">Not an entity?</p>', unsafe_allow_html=True)
-                        st.button("🗑 Delete entity", key=f"del-{e.key}", on_click=delete_entity, args=(sess, e),
-                                  width="stretch", help="False detection: keep the text as written.")
+        focus_type = next((e.type for e in res.entities if e.key == focus), None)
+        with st.expander(f"Entities ({len(res.entities)})", expanded=bool(focus_type)):
+            pending = [e for e in res.entities if e.status == "pending"]
+            options = (["__review__"] if pending else []) + list(by_type)
+            if focus_type and st.session_state.get("_ent_focus_seen") != focus:
+                st.session_state.ent_type = focus_type          # jump to a just-split/merged entity once
+                st.session_state._ent_focus_seen = focus
+            if st.session_state.get("ent_type") not in options:
+                st.session_state.ent_type = options[0] if options else None
+            if options:
+                pick = st.selectbox("Show", options, key="ent_type", label_visibility="collapsed",
+                                    format_func=lambda t: f"To review ({len(pending)})" if t == "__review__"
+                                    else f"{type_name(t)} ({len(by_type[t])})")
+                for e in (pending if pick == "__review__" else by_type.get(pick, [])):
+                    entity_popover(sess, res, e, focus)
+
         st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
         st.button("Start over", on_click=reset, width="stretch")
-        st.caption("Light / dark: ⋮ menu → Settings → Theme.")
+        st.caption("Light / dark: ⋮ → Settings → Theme")
 
 
 # --------------------------------------------------------------------------- adding documents / start
@@ -905,11 +917,35 @@ def is_current(sess: Session, res, doc: int) -> bool:
 def redact_dialog(sess: Session, res, payload: dict) -> None:
     phrase = " ".join(payload["text"].split())
     body = r"\s+".join(map(re.escape, phrase.split()))
-    hits = [(i, len(re.findall(r"(?<![\w])" + body + r"(?![\w])", t))) for i, t in enumerate(res.texts)]
+    spans = [(i, m.start(), m.end()) for i, t in enumerate(res.texts)
+             for m in re.finditer(r"(?<![\w])" + body + r"(?![\w])", t)]
+    hits = [(i, sum(1 for d, _, _ in spans if d == i)) for i in range(len(res.texts))]
     hits = [(i, n) for i, n in hits if n]
     st.markdown(f'<div class="form-row"><span class="form">{html.escape(phrase)}</span></div>', unsafe_allow_html=True)
+
+    # Already redacted? The selection is a placeholder ("Person A") or sits inside a redaction ("Redmond,
+    # Washington" inside the full address). Then the useful action is to change that redaction.
+    def covering(d, a, b):
+        return next((e for e in res.entities for md, ms, me, _ in e.mentions
+                     if md == d and ms <= a and b <= me and (ms, me) != (a, b) and e.is_redacted), None)
+    owner = None
+    if spans and all(covering(*sp) for sp in spans):
+        owner = covering(*spans[0])
+    elif not spans:
+        owner = next((e for e in res.entities if e.is_redacted and
+                      phrase.lower() in {e.replacement_for(m[3]).lower() for m in e.mentions}), None)
+    if owner is not None:
+        st.caption(f"Already redacted as **{owner.label}** ({examples(owner, 2)}). Change what it becomes:")
+        rk, rv = replacement_picker(res, owner, "rd_owner", owner.label)
+        c1, c2 = st.columns(2)
+        if c1.button("Save", type="primary", width="stretch", key="rd_owner_save"):
+            if apply_replacement(sess, res, "E|" + owner.key, owner, rk, rv):
+                st.rerun()
+        if c2.button("Cancel", width="stretch", key="rd_owner_cancel"):
+            st.rerun()
+        return
     if not hits:
-        st.warning("Not found in the originals — it may be inside a placeholder. Use ✎ on the placeholder instead.")
+        st.warning("Not found in the originals. Select plain text, or use ✎ on a placeholder.")
         return
     total = sum(n for _, n in hits)
     st.caption(f"{total} occurrence{'s' if total != 1 else ''} in " + ", ".join(res.names[i] for i, _ in hits)
