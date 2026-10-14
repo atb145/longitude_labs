@@ -487,3 +487,35 @@ def test_rules_can_be_saved_and_reused():
     assert [p["name"] for p in s2.ops["parties"]] == ["Project Falcon"]
     # the saved file contains the pack's own rules once (no duplicated base rules)
     assert len(pol.flags) == len(s.policy.flags)
+
+
+def test_undo_reverses_approvals_too():
+    sess = Session.from_texts([("a.txt", "Jane Smith of Acme Corp called. Jane Smith agreed.")])
+    sess.decide_many([k for k in sess.run().queue], "accept")
+    sess.approve(0, sess.run())
+    assert 0 in sess.approved and sess.last_change == "Approve a.txt"
+    sess.undo()                                  # the most recent action, not the last review decision
+    assert 0 not in sess.approved
+    assert all(sess.run().item(k).status != "pending" for k in sess.run().queue)
+    sess.approve(0, sess.run())
+    sess.unapprove(0)
+    sess.undo()
+    assert 0 in sess.approved
+
+
+def test_pdf_and_word_downloads():
+    import io
+    import zipfile
+
+    import docx
+    import pdfplumber
+    from engine.export import buyer_zip, render_file
+    docs = [("a.txt", "Defendant A — “Company B” → ok\n\nSecond paragraph"), ("b.txt", "Person A")]
+    pdf = render_file(docs, "pdf")
+    with pdfplumber.open(io.BytesIO(pdf)) as p:
+        assert len(p.pages) == 2 and "Second paragraph" in p.pages[0].extract_text()
+        assert not (p.metadata.get("Author") or "").strip()
+    d = docx.Document(io.BytesIO(render_file(docs, "docx")))
+    assert any("Second paragraph" in para.text for para in d.paragraphs) and not d.core_properties.author
+    with zipfile.ZipFile(io.BytesIO(buyer_zip(["a.txt", "b.txt"], ["x", "y"], "pdf"))) as z:
+        assert sorted(z.namelist()) == ["a.anonymized.pdf", "b.anonymized.pdf"]

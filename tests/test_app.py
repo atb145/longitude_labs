@@ -34,10 +34,16 @@ def test_sample_flow_all_views():
     labels = [d.proto.label for d in at.get("download_button") if not d.proto.disabled]
     assert any("Download approved files" in l for l in labels) and any("combined" in l for l in labels)
     assert any("Ready to share" in m.value for m in at.markdown)
-    # ↶ Undo reverses the last change
+    # ↶ Undo lives where edits and approvals happen, and reverses the most recent one — here an approval
+    assert not any(b.label == "↶ Undo" for b in at.button)
+    at.session_state.view = "Documents"
+    at.run()
+    sess.unapprove(2)
+    sess.approve(2, sess.run())
     before = len(sess.undo_stack)
     next(b for b in at.button if b.label == "↶ Undo").click().run()
     assert not at.exception and len(at.session_state.session.undo_stack) == before - 1
+    assert 2 not in at.session_state.session.approved and sess.last_change == "Move 03_settlement_order.txt back"
 
 
 def test_add_documents_keeps_pseudonyms():
@@ -168,3 +174,44 @@ def test_rules_from_the_last_set_are_used_again():
     again = at.session_state.session
     assert again.settings["placeholder_style"] == "redacted"
     assert any(p["name"] == "Northwind Holdings" for p in again.ops["parties"])
+
+
+def test_review_all_at_once_and_bulk_approve():
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    assert not any(e.label == "Quick tips" for e in at.expander)
+    sess = at.session_state.session
+    pending = [k for k in sess.run().queue if sess.run().item(k).status == "pending"]
+    assert pending and len(at.checkbox) >= len(pending)          # every open item on one page
+    undo_before = len(sess.undo_stack)
+    next(b for b in at.button if b.label.startswith("✓ Approve") and "selected" in b.label).click().run()
+    assert not at.exception
+    left = [k for k in sess.run().queue if sess.run().item(k).status == "pending"]
+    # Everything ticked is approved in one step (sentences that need your wording stay open)…
+    assert all(sess.run().item(k).rule == "quasi.combination" for k in left)
+    assert len(sess.undo_stack) == undo_before + 1                 # …and one ↶ Undo reverses the batch
+    sess.undo()
+    assert len([k for k in sess.run().queue if sess.run().item(k).status == "pending"]) == len(pending)
+
+
+def test_open_item_from_list_and_return():
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    sess = at.session_state.session
+    second = [k for k in sess.run().queue if sess.run().item(k).status == "pending"][1]
+    at.button(key=f"open_{second}").click().run()
+    assert at.session_state.review_mode == "one" and at.session_state.review_pick == second
+    keep = ("Keep as written", "No, keep the name", "It's fine as is", "No, someone else", "I have consent — keep it")
+    next(b for b in at.button if b.label in keep).click().run()
+    assert not at.exception
+    assert sess.run().item(second).status != "pending" and at.session_state.review_mode == "list"
+
+
+def test_documents_progress_and_no_next_to_approve():
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    at.session_state.view = "Documents"
+    at.run()
+    assert not at.exception
+    assert not any(b.label == "Next to approve" for b in at.button)
+    assert sum("0 of 3 approved" in m.value for m in at.markdown) == 2   # top and next to the approve button

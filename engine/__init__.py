@@ -59,9 +59,10 @@ class Session:
     approved: dict = field(default_factory=dict)  # doc index -> {"output", "at", "changes"} snapshot
     undo_stack: list = field(default_factory=list)  # [(what changed, ops before the change)] — one history
 
-    # ---- undo: every change to the registry goes through _checkpoint, so ↶ Undo reverses the last one
+    # ---- undo: every change (registry edits and approvals) goes through _checkpoint, so ↶ Undo reverses
+    # the most recent one, whichever step it was made on
     def _checkpoint(self, what: str) -> None:
-        self.undo_stack.append((what, copy.deepcopy(self.ops)))
+        self.undo_stack.append((what, copy.deepcopy(self.ops), copy.deepcopy(self.approved)))
         del self.undo_stack[:-100]
 
     @property
@@ -76,8 +77,10 @@ class Session:
         """Reverse the last change (any kind). Returns what was undone, or None."""
         if not self.undo_stack:
             return None
-        what, ops = self.undo_stack.pop()
+        what, ops, *approved = self.undo_stack.pop()  # entries from before approvals were tracked have 2 parts
         self.ops = ops
+        if approved:
+            self.approved = approved[0]
         return what
 
     def retype(self, entity_key: str, new_type: str, note: str = "") -> None:
@@ -168,6 +171,15 @@ class Session:
         self.ops["decisions"][item_key] = {"action": action, "value": value}
         self.ops["history"].append(item_key)
 
+    def decide_many(self, item_keys: list[str], action: str, note: str = "") -> None:
+        """One decision for many review items at once; a single ↶ Undo reverses the whole batch."""
+        if not item_keys:
+            return
+        self._checkpoint(note or f"{'Approve' if action == 'accept' else 'Keep'} {len(item_keys)} items")
+        for key in item_keys:
+            self.ops["decisions"][key] = {"action": action, "value": ""}
+            self.ops["history"].append(key)
+
     def redact(self, text: str, entity_type: str = "MANUAL", replacement: str = "", label: str = "",
                note: str = "") -> None:
         """Redact a phrase by hand. Applies to every occurrence in every document. ``label`` is a
@@ -243,11 +255,14 @@ class Session:
 
     def approve(self, doc: int, result: Result) -> None:
         from datetime import datetime
+        self._checkpoint(f"Approve {self.names[doc]}")
         self.approved[doc] = {"output": result.outputs[doc], "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                               "changes": len(result.segments[doc])}
 
     def unapprove(self, doc: int) -> None:
-        self.approved.pop(doc, None)
+        if doc in self.approved:
+            self._checkpoint(f"Move {self.names[doc]} back")
+            self.approved.pop(doc, None)
 
     def merge(self, src_key: str, dst_key: str, note: str = "") -> None:
         self._checkpoint(note or "Treat as the same")
