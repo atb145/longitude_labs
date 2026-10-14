@@ -3,10 +3,8 @@ title: Longitude Anonymizer
 emoji: 📄
 colorFrom: blue
 colorTo: gray
-sdk: streamlit
-sdk_version: 1.65.0
-python_version: "3.12"
-app_file: app.py
+sdk: docker
+app_port: 8501
 pinned: false
 ---
 
@@ -85,18 +83,24 @@ streamlit run app.py
 
 ## Deploy to Hugging Face Spaces
 
-1. Create a Space at <https://huggingface.co/new-space>: SDK **Streamlit**, hardware **CPU basic**
-   (free tier is enough; spaCy `en_core_web_lg` needs ~1 GB RAM). Visibility **Private** while testing.
-2. Push this repository to the Space:
+The Space runs the `Dockerfile` (Hugging Face creates Streamlit apps as Docker Spaces).
+
+1. On huggingface.co: **New → Space**. Name it (e.g. `longitude-anonymizer`), choose SDK **Docker** →
+   template **Blank**, hardware **CPU basic** (free; 16 GB RAM is plenty for spaCy `en_core_web_lg`),
+   visibility **Private** while testing.
+2. Create an access token with **write** scope: huggingface.co → Settings → Access Tokens.
+3. Push this repository to the Space (use your HF username and the token as the password):
    ```bash
-   git remote add space https://huggingface.co/spaces/<your-org>/longitude-anonymizer
-   git push space HEAD:main
+   git remote add space https://huggingface.co/spaces/<your-username>/longitude-anonymizer
+   git push --force space main
    ```
-   (Use a Hugging Face access token with *write* scope as the password.)
-3. The YAML block at the top of this README configures the Space (`sdk: streamlit`, `app_file: app.py`).
-   `requirements.txt` installs Presidio and the spaCy model wheel directly, so no extra build step is
-   needed. First build takes ~5 minutes.
-4. Light/dark: viewers switch in the app menu (⋮ → Settings → Theme).
+   `--force` replaces the starter README the Space was created with.
+4. The YAML block at the top of this README tells the Space to build the Dockerfile and serve port 8501.
+   First build takes ~5–8 minutes (it downloads the spaCy model); later pushes rebuild automatically.
+5. Light/dark: viewers switch in the app menu (⋮ → Settings → Theme).
+
+Vercel can't host this app: Streamlit is a long-running Python server with a WebSocket per viewer, which
+Vercel's static/serverless platform doesn't run.
 
 ## Production roadmap (out of scope for this prototype)
 
