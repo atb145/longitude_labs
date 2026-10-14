@@ -52,6 +52,8 @@ def inject_css() -> None:
 
     .ll-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:.4rem; }
     .ll-word { font-family:var(--serif); font-size:1.35rem; font-weight:500; }
+    [data-testid="stSidebar"] { min-width: 300px; }
+    @media (max-width: 640px) { .ll-coord { display:none; } .ll-word { font-size:1.15rem; } }
     .ll-word .dim { color:var(--dim); font-family:var(--sans); font-size:.85rem; font-weight:400; margin-left:.3rem; }
     .ll-coord { font-size:.8rem; color:var(--dim); padding:.25rem .8rem; border:1px solid var(--rule); border-radius:999px; }
     .wave { display:block; width:100%; height:18px; color:var(--soft); margin:.2rem 0 2rem; }
@@ -168,9 +170,9 @@ def label(text: str, accent: str = "") -> None:
 
 def header() -> None:
     sess = st.session_state.get("session")
-    coord = (f"{len(sess.names)} documents · {sess.policy.name} policy" if sess else "Prototype")
+    coord = f'<span class="ll-coord">{len(sess.names)} documents · {html.escape(sess.policy.name)} policy</span>' if sess else ""
     st.markdown(f'<div class="ll-head"><span class="ll-word">Longitude Anonymizer <span class="dim">— prototype</span></span>'
-                f'<span class="ll-coord">{coord}</span></div>{WAVE}', unsafe_allow_html=True)
+                f'{coord}</div>{WAVE}', unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------- state helpers
@@ -807,7 +809,7 @@ def documents(sess: Session, res) -> None:
 
     edit = st.session_state.get("edit_mode", False)
     options = [(i, v) for i in range(n) for v in ("original", "anonymized")]
-    fmt = lambda o: f"{short(res.names[o[0]])} · {o[1]}"
+    fmt = lambda o: f"{o[1].capitalize()} · {short(res.names[o[0]], 22)}"
     c1, c2, c3, c4 = st.columns([1.55, 1.75, 1.75, 1.45], vertical_alignment="bottom")
     layout = c1.segmented_control("Layout", ["Side by side", "Single"], default="Side by side", key="doc_layout")
     if layout == "Single":
@@ -928,10 +930,11 @@ def log_view(sess: Session, res) -> None:
         f'<span class="{"ok" if ok else "warn"}">{"✓" if ok else "!"}</span>&nbsp; {html.escape(t)}' for ok, t in lines)
         + "</div>", unsafe_allow_html=True)
     if cc["unreviewed"]:
-        for k in cc["unreviewed"]:
-            it = res.item(k)
-            st.markdown(f"<span class='mono dim'>· {html.escape(it.text if k.startswith('F|') else it.canonical)}"
-                        f" → {html.escape(it.proposed)}</span>", unsafe_allow_html=True)
+        with st.expander(f"Show the {len(cc['unreviewed'])} unreviewed item(s)"):
+            st.markdown("".join(
+                f'<div class="form-row"><span class="form">'
+                f'{html.escape(res.item(k).text if k.startswith("F|") else res.item(k).canonical)}</span>'
+                f' → {html.escape(res.item(k).proposed)}</div>' for k in cc["unreviewed"]), unsafe_allow_html=True)
     st.dataframe(pd.DataFrame(cc["rows"]), hide_index=True, width="stretch")
 
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)

@@ -523,8 +523,25 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     # Detected entities are numbered first, manual redactions after them, so adding one by hand
     # never renumbers the pseudonyms a reviewer has already seen.
     hand = {k for k, v in manual.items() if v}  # manual entries proper (not aliases joined to an entity)
+    public_names = {" ".join(org_tokens(p)) for p in policy.public_companies}
+
+    def kept_by_policy(e: Entity) -> bool:  # kept entities don't use up a pseudonym ("Company C")
+        if e.key in hand:
+            return False
+        if e.type in disabled or (e.type == "DATE" and settings.get("date_mode") == "exact"):
+            return True
+        if e.type == "ORGANIZATION":
+            if not settings.get("redact_organizations", True):
+                return True
+            return settings.get("keep_public_companies", True) and any(
+                " ".join(org_tokens(m[3])) in public_names for m in e.mentions)
+        return False
+
     for e in [x for x in entities if x.key not in hand] + [x for x in entities if x.key in hand]:
         spec = policy.spec(e.type)
+        if kept_by_policy(e):
+            e.label = "Kept"
+            continue
         default = manual[e.key].get("label") if e.key in hand and manual[e.key].get("label") else (
             "Redacted {1}" if e.type == "MANUAL" else type_title(e.type) + " {1}")
         e.label = _label(spec.get("label", default), counters[e.type])
@@ -651,7 +668,12 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
 def redaction_log(res: Result) -> list[dict]:
     rows = []
     for e in res.entities:
-        reps = sorted({e.replacement_for(m[3]) for m in e.mentions})
+        reps_by_case: dict[str, str] = {}
+        for m in e.mentions:  # "PERSON A" (ALL-CAPS caption) and "Person A" are one replacement
+            r = e.replacement_for(m[3])
+            if r.casefold() not in reps_by_case or reps_by_case[r.casefold()].isupper():
+                reps_by_case[r.casefold()] = r
+        reps = sorted(reps_by_case.values())
         rows.append({
             "original": " | ".join(sorted({m[3] for m in e.mentions})),
             "replacement": " | ".join(reps),
