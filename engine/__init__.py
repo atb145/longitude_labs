@@ -201,6 +201,7 @@ class Session:
         new.approved = dict(getattr(old, "approved", {}) or {})
         new.warnings = list(getattr(old, "warnings", None) or [[] for _ in old.names])
         new.rights_confirmed = bool(getattr(old, "rights_confirmed", False))
+        new.undo_stack = list(getattr(old, "undo_stack", None) or [])
         return new
 
     def redact_as(self, entity_key: str, text: str, note: str = "") -> None:
