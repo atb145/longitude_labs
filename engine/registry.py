@@ -1282,7 +1282,13 @@ def consistency_check(res: Result) -> dict:
                 for o in originals:
                     if o.lower() in e.replacement_for(o).lower():
                         continue  # already coarse ("$2B" → "~$2B") — the replacement contains it on purpose
-                    hit = len(o) >= 3 and re.search(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", out, re.IGNORECASE)
+                    if len(o) < 3:
+                        continue
+                    if " " in o.strip():
+                        hit = re.search(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", out, re.IGNORECASE)
+                    else:  # one word: "Share" the name is not "share" the word
+                        forms = {o, o[:1].upper() + o[1:], o.upper()}
+                        hit = re.search(r"(?<![\w-])(?:" + "|".join(map(re.escape, forms)) + r")(?![\w-])", out)
                     if hit:
                         leaks.append(f"{hit.group()!r} in {res.names[doc]}")
                         # the exact wording found, so "Redact it" can target it

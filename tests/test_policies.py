@@ -463,3 +463,27 @@ def test_review_queue_puts_simple_cards_first():
     _, res = run(docs)
     kinds = [("E" if k.startswith("E|") else ("S" if res.item(k).scope == "sentence" else "F")) for k in res.queue]
     assert kinds == sorted(kinds, key="EFS".index)
+
+
+def test_capitalized_one_word_name_does_not_flag_the_ordinary_word():
+    txt = "Share Holdings LLC filed the form. Share later sold 10 shares at $5 per share."
+    s, res = run([("d.txt", txt)])
+    s.redact("Share")
+    cc = consistency_check(s.run())
+    assert not any(lk["text"].lower() == "share" and lk["text"] == "share" for lk in cc["leak_items"])
+
+
+def test_rules_can_be_saved_and_reused():
+    from engine import load_policy_text
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    s, _ = run(docs, date_mode="relative", placeholder_style="redacted", disabled=["CUSIP"])
+    s.add_party("Project Falcon", "MANUAL")
+    text = s.export_rules("Acme — finance")
+    pol = load_policy_text(text)
+    assert pol.name == "Acme — finance"
+    s2 = Session.from_texts(docs, pol)
+    assert s2.settings["date_mode"] == "relative" and s2.settings["placeholder_style"] == "redacted"
+    assert "CUSIP" in s2.settings["disabled"]
+    assert [p["name"] for p in s2.ops["parties"]] == ["Project Falcon"]
+    # the saved file contains the pack's own rules once (no duplicated base rules)
+    assert len(pol.flags) == len(s.policy.flags)

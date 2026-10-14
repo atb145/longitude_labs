@@ -42,6 +42,8 @@ class Policy:
     generic_domains: set[str] = field(default_factory=set)
     role_rules: list[dict] = field(default_factory=list)  # {"where", "regex", "role", "types"}
     tickers: dict[str, str] = field(default_factory=dict)  # "MSFT" -> "MICROSOFT CORP"
+    known_parties: list[dict] = field(default_factory=list)  # saved "always hide" names: {"name", "type"}
+    source_raw: dict = field(default_factory=dict)  # the pack's own YAML before _base.yaml is merged in
     ticker_stopwords: set[str] = field(default_factory=set)
 
     def spec(self, entity_type: str) -> dict:
@@ -145,6 +147,8 @@ def _load_tickers(rel: str | None) -> dict[str, str]:
 
 
 def parse_policy(raw: dict, fallback_name: str) -> Policy:
+    import copy
+    source_raw = copy.deepcopy(raw)
     raw = _merge_base(raw)
     recognizers = [dict(r) for r in raw.get("recognizers", [])]
     flags = [
@@ -193,6 +197,9 @@ def parse_policy(raw: dict, fallback_name: str) -> Policy:
         party_cues={k: [re.compile(p) for p in v] for k, v in (raw.get("party_cues") or {}).items()},
         generic_domains={d.lower() for d in raw.get("generic_domains") or []},
         tickers=_load_tickers(raw.get("ticker_list")),
+        known_parties=[{"name": str(p.get("name", "")).strip(), "type": p.get("type") or "ORGANIZATION"}
+                       for p in raw.get("known_parties") or [] if str(p.get("name", "")).strip()],
+        source_raw=source_raw,
         ticker_stopwords={t.upper() for t in raw.get("ticker_stopwords") or []},
         role_rules=[{"where": r.get("where", "after"), "regex": re.compile(r["pattern"]), "role": r.get("role"),
                      "types": set(r.get("types") or ["PERSON", "ORGANIZATION"])} for r in raw.get("role_labels") or []],

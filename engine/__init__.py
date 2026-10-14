@@ -91,7 +91,9 @@ class Session:
         if isinstance(policy, str):
             policy = load_policy(available_policies()[policy])
         names, texts = [n for n, _ in docs], [t for _, t in docs]
-        return cls(names, texts, policy, detect(analyzer_for(policy), policy, texts), dict(policy.settings))
+        sess = cls(names, texts, policy, detect(analyzer_for(policy), policy, texts), dict(policy.settings))
+        sess.ops["parties"] = [dict(p) for p in policy.known_parties]  # saved "always hide" names come along
+        return sess
 
     @classmethod
     def from_files(cls, files: list[tuple[str, bytes]], policy: str | Policy = "Finance") -> "Session":
@@ -135,6 +137,20 @@ class Session:
         new.warnings = self.warnings
         new.rights_confirmed = self.rights_confirmed
         return new
+
+    def export_rules(self, name: str, note: str = "") -> str:
+        """The customized rules as a policy file: the pack's own YAML plus your settings, rule switches and
+        "always hide" names. Load it again (library or upload) to reuse it on any document set."""
+        import yaml
+        from datetime import date
+        raw = copy.deepcopy(self.policy.source_raw or {})
+        raw["name"] = " ".join(name.split()) or self.policy.name
+        raw["description"] = note or f"Saved from {self.policy.name} on {date.today().isoformat()}."
+        keep = ("date_mode", "placeholder_style", "role_labels", "public_companies", "generalize_addresses",
+                "redact_organizations", "disabled")
+        raw["settings"] = {**(raw.get("settings") or {}), **{k: self.settings[k] for k in keep if k in self.settings}}
+        raw["known_parties"] = [dict(p) for p in self.ops.get("parties", [])]
+        return yaml.safe_dump(raw, sort_keys=False, allow_unicode=True, width=120)
 
     def run(self) -> Result:
         """Build the result. Memoized on (documents, settings, ops): the UI asks for it many times per click."""
