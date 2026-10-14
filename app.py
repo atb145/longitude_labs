@@ -12,6 +12,27 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+
+def _ensure_fresh_engine() -> None:
+    """After a deploy, the server can keep the previous engine modules loaded while app.py is new. Compare the
+    engine and policy files on disk with what's loaded, and reload the engine if they differ."""
+    import hashlib
+    import importlib
+    import sys
+
+    import engine as loaded
+    root = Path(__file__).resolve().parent
+    h = hashlib.sha256()
+    for path in sorted(list((root / "engine").glob("*.py")) + list((root / "policies").rglob("*.yaml"))):
+        h.update(path.read_bytes())
+    if h.hexdigest()[:12] != getattr(loaded, "_CODE_VERSION", None):
+        for name in ("engine.policy", "engine.extract", "engine.detect", "engine.registry", "engine.export", "engine"):
+            if name in sys.modules:
+                importlib.reload(sys.modules[name])
+
+
+_ensure_fresh_engine()
+
 from engine import (Session, available_policies, consistency_check, load_policy, load_policy_text, redaction_log,
                     search)
 from engine.export import buyer_zip, internal_log_csv
@@ -286,7 +307,8 @@ def decide(item_key: str, action: str, value: str = "", note: str = "") -> None:
 
 
 def undo() -> None:
-    what = st.session_state.session.undo()
+    sess = st.session_state.session
+    what = sess.undo() if hasattr(sess, "undo_stack") else None
     st.session_state.editing = False
     if what:
         st.session_state.focus_note = f"Undone: {what}"
@@ -1540,7 +1562,7 @@ def audit_trail(sess: Session, res) -> None:
 # --------------------------------------------------------------------------- main
 inject_css()
 sess: Session | None = st.session_state.get("session")
-if sess is not None and getattr(sess, "VERSION", 0) != Session.VERSION:
+if sess is not None and (type(sess) is not Session or getattr(sess, "VERSION", 0) != Session.VERSION):
     # The app was updated while this browser session was open: rebuild the set with the new engine,
     # keeping every decision, instead of crashing on the old object.
     with st.spinner("The app was updated — re-checking your documents with the new rules…"):
@@ -1568,8 +1590,9 @@ else:
         with s1:
             view = st.segmented_control("Step", VIEWS, key="view", format_func=labels.get,
                                         label_visibility="collapsed") or "Review"
-        s2.button("↶ Undo", key="undo_top", on_click=undo, disabled=not sess.can_undo, width="stretch",
-                  help=f"Undo: {sess.last_change}" if sess.can_undo else "Nothing to undo yet")
+        can_undo = bool(getattr(sess, "undo_stack", None))
+        s2.button("↶ Undo", key="undo_top", on_click=undo, disabled=not can_undo, width="stretch",
+                  help=f"Undo: {sess.last_change}" if can_undo else "Nothing to undo yet")
     # Ask before leaving: nothing is saved, so a refresh would wipe the work.
     st.html("<script>window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue = ''; };</script>",
             unsafe_allow_javascript=True)

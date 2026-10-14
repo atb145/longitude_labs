@@ -108,3 +108,42 @@ def test_search_panel_and_entity_search():
     at.text_input(key="ent_search").set_value("okafor").run()
     assert not at.exception, at.exception
     assert any("match" in c.value for c in at.sidebar.caption)
+
+
+def test_session_from_previous_engine_is_rebuilt_even_with_matching_version():
+    """The crash from the live app: a session object from the previous engine (no can_undo / undo_stack) that
+    still reports the current VERSION must be rebuilt, not used."""
+    from types import SimpleNamespace
+    from engine import Session
+    root = pathlib.Path(APP).parent / "samples"
+    files = sorted(root.glob("*.txt"))
+    stale = SimpleNamespace(VERSION=Session.VERSION, names=[f.name for f in files], texts=[f.read_text() for f in files],
+                            ops={"decisions": {}, "history": []}, approved={}, policy=None, settings={},
+                            warnings=[[] for _ in files], rights_confirmed=True)
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state.session = stale
+    at.session_state.view = "Review"
+    at.run()
+    assert not at.exception, at.exception
+    rebuilt = at.session_state.session
+    assert hasattr(rebuilt, "undo_stack") and rebuilt.rights_confirmed
+    for view in ("Start", "Documents", "Final"):
+        at.session_state.view = view
+        at.run()
+        assert not at.exception, (view, at.exception)
+
+
+def test_stale_engine_module_is_reloaded():
+    """If the server kept the previous engine loaded after a deploy, app.py reloads it from disk."""
+    import engine
+    real = engine._CODE_VERSION
+    engine._CODE_VERSION = "stale-build"
+    try:
+        at = AppTest.from_file(APP, default_timeout=180).run()
+        assert not at.exception, at.exception
+        import sys
+        assert sys.modules["engine"]._CODE_VERSION == real
+    finally:
+        sys_engine = __import__("sys").modules["engine"]
+        if sys_engine._CODE_VERSION == "stale-build":
+            sys_engine._CODE_VERSION = real
