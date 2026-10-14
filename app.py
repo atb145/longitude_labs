@@ -35,7 +35,7 @@ _ensure_fresh_engine()
 
 from engine import (Session, available_policies, consistency_check, load_policy, load_policy_text, redaction_log,
                     search)
-from engine.export import buyer_zip, internal_log_csv
+from engine.export import FORMATS, buyer_zip, internal_log_csv, render_file
 from engine.extract import SUPPORTED
 from engine.registry import norm_form, split_key, type_title
 
@@ -108,7 +108,7 @@ def inject_css() -> None:
     .dim { color:var(--dim); }
 
     /* progress */
-    .fix { margin:.4rem 0 2rem; }
+    .fix { margin:.4rem 0 2rem; } .fix.tight { margin:0; }
     .fix-row { display:flex; justify-content:space-between; font-size:.85rem; color:var(--dim); margin-bottom:.5rem; }
     .fix-row .now { color:var(--fg); font-weight:500; }
     .track { position:relative; height:8px; border-radius:999px; background:var(--rule); overflow:hidden; }
@@ -185,8 +185,18 @@ def inject_css() -> None:
     @keyframes ll-spin { to { transform: rotate(360deg); } }
     @keyframes ll-fade { from { opacity: 0; } to { opacity: 1; } }
     .st-key-rules_lib_host { display: none; }
-    .count-top { font-size:.85rem; color:var(--dim); margin:0 0 .15rem; }
-    .count-top b { color:var(--fg); font-weight:500; }
+    /* review list */
+    .qrow-top { display:flex; justify-content:space-between; align-items:center; gap:.4rem 1rem; flex-wrap:wrap;
+                font-size:.8rem; }
+    .qrow-top .card-type { margin:0; }
+    .qrow-main { font-size:1rem; margin:.45rem 0 .25rem; overflow-wrap:anywhere; }
+    .qrow-main b { font-weight:500; }
+    .qrow-ctx { font-size:.9rem; line-height:1.55; color:var(--dim); }
+    .qrow-ctx mark { background:var(--soft); color:#272727; padding:0 .2em; border-radius:.3rem; }
+    .st-key-qlist [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; }
+    .st-key-qlist [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child { flex: 0 0 1.6rem !important; min-width: 1.6rem !important; }
+    .st-key-qlist [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) { flex: 1 1 auto !important; min-width: 0 !important; }
+    .st-key-qlist [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child { flex: 0 0 4.6rem !important; min-width: 4.6rem !important; }
     .doc-count b { color:var(--fg); }
     .pane-tag { font-size:.7rem; font-weight:500; letter-spacing:.08em; text-transform:uppercase; padding:.12rem .6rem; border-radius:999px; }
     .pane-tag.original { border:1px solid var(--rule); color:var(--dim); }
@@ -321,8 +331,12 @@ def decide(item_key: str, action: str, value: str = "", note: str = "") -> None:
 
 def undo() -> None:
     sess = st.session_state.session
+    before = set(getattr(sess, "approved", {}))
     what = sess.undo() if hasattr(sess, "undo_stack") else None
     st.session_state.editing = False
+    changed = before ^ set(sess.approved)
+    if changed and st.session_state.get("view") == "Documents":  # show the file whose approval was undone
+        st.session_state.doc_pick = min(changed)
     if what:
         st.session_state.focus_note = f"Undone: {what}"
 
@@ -870,26 +884,125 @@ def start_view(sess: Session, res) -> None:
 
 
 # --------------------------------------------------------------------------- review
-def bearing(done: int, total: int) -> None:
+def bearing(done: int, total: int, title: str = "Review queue", unit: str = "reviewed", tight: bool = False) -> None:
     frac = done / total if total else 1.0
+    left = total - done
     st.markdown(
-        f'<div class="fix"><div class="fix-row"><span>Review queue</span>'
-        f'<span class="now">{done} of {total} reviewed</span></div>'
+        f'<div class="fix{" tight" if tight else ""}"><div class="fix-row"><span>{title}</span>'
+        f'<span class="now">{done} of {total} {unit}{f" · {left} left" if left else " ✓"}</span></div>'
         f'<div class="track"><div class="fill" style="width:{frac * 100:.1f}%"></div></div></div>',
         unsafe_allow_html=True)
 
 
+def item_kind(sess: Session, key: str, item) -> str:
+    """The short tag on a review card: what kind of question this is."""
+    if key.startswith("F|"):
+        flag_title = next((f.title for f in sess.policy.flags if f.id == item.rule and f.title), "")
+        return {"quasi.combination": "Could identify someone"}.get(item.rule, flag_title or "Needs a look")
+    if item.rule == "names.public_company_party_check":
+        return "Public company · is it involved?"
+    if getattr(item, "nick_target", ""):
+        return "Possible nickname"
+    return f"{type_name(item.type)} · not sure"
+
+
+def open_item(key: str) -> None:
+    st.session_state.update(review_pick=key, review_mode="one", review_return=True, editing=False)
+
+
+def set_picks(keys: list[str], value: bool) -> None:
+    for k in keys:
+        st.session_state[f"pick_{k}"] = value
+
+
+def bulk_decide(keys: list[str], action: str) -> None:
+    sess = st.session_state.session
+    word = "Approved" if action == "accept" else "Kept as written:"
+    sess.decide_many(keys, action, f"{'Approve' if action == 'accept' else 'Keep'} {len(keys)} items")
+    for k in keys:
+        st.session_state.pop(f"pick_{k}", None)
+    st.session_state.focus_note = (f"{word} {len(keys)} item{'s' if len(keys) != 1 else ''} — ↶ Undo reverses "
+                                   + ("all of them" if len(keys) != 1 else "it"))
+
+
+def review_list(sess: Session, res, pending: list[str]) -> None:
+    """Every open item on one page: tick the ones to approve, open any to change by hand."""
+    items = [(k, res.item(k)) for k in pending]
+    for k, it in items:  # ticked by default, except sentences that need your own wording
+        st.session_state.setdefault(f"pick_{k}", it.rule != "quasi.combination")
+    chosen = [k for k, _ in items if st.session_state.get(f"pick_{k}")]
+    keys = [k for k, _ in items]
+
+    def bar(where: str) -> None:
+        with st.container(key=f"bulkbar_{where}"):
+            b1, b2, b3, b4 = st.columns([1.7, 1.6, .8, .8], vertical_alignment="center")
+            b1.button(f"✓ Approve {len(chosen)} selected", type="primary", disabled=not chosen, width="stretch",
+                      key=f"bulk_ok_{where}", on_click=bulk_decide, args=(chosen, "accept"))
+            b2.button(f"Keep {len(chosen)} as written", disabled=not chosen, width="stretch",
+                      key=f"bulk_keep_{where}", on_click=bulk_decide, args=(chosen, "keep"),
+                      help="Not sensitive: leave these as they are in the original")
+            b3.button("All", width="stretch", key=f"bulk_all_{where}", on_click=set_picks, args=(keys, True),
+                      help="Select every item")
+            b4.button("None", width="stretch", key=f"bulk_none_{where}", on_click=set_picks, args=(keys, False),
+                      help="Clear the selection")
+
+    bar("top")
+    st.caption("Approve uses the suggestion everywhere it appears. Untick anything you want to change, then "
+               "open it.")
+    with st.container(key="qlist"):
+        queue_rows(sess, res, items)
+    if len(items) > 4:  # the same actions at the bottom, so a long list doesn't send you back up
+        bar("bottom")
+
+
+def queue_rows(sess: Session, res, items: list) -> None:
+    for k, it in items:
+        doc, s0, e0, _ = it.mentions[0]
+        n = len(it.mentions)
+        is_flag = k.startswith("F|")
+        sentence = is_flag and getattr(it, "scope", "") == "sentence"
+        found = it.text if is_flag else it.canonical
+        if it.rule == "quasi.combination":
+            change = '<span class="warn">Needs your wording — open it to rewrite the sentence</span>'
+        elif sentence:
+            change = f'Becomes <b>{html.escape(_flat(it.proposed, 160))}</b>'
+        else:
+            change = f'<b>{html.escape(found)}</b> <span class="dim">→</span> <b>{html.escape(it.proposed)}</b>'
+        with st.container(border=True):
+            c0, c1, c2 = st.columns([.32, 6, 1.05], vertical_alignment="center")
+            c0.checkbox("Approve", key=f"pick_{k}", label_visibility="collapsed")
+            c1.markdown(
+                f'<div class="qrow"><div class="qrow-top"><span class="card-type">{html.escape(item_kind(sess, k, it))}'
+                f'</span><span class="dim">{html.escape(res.names[doc])} · {n} place{"s" if n != 1 else ""}</span></div>'
+                f'<div class="qrow-main">{change}</div>'
+                f'<div class="qrow-ctx">{context_html(res, doc, s0, e0, neighbours=False)}</div></div>',
+                unsafe_allow_html=True)
+            c2.button("Open", key=f"open_{k}", width="stretch", on_click=open_item, args=(k,),
+                      help="Change the label, the type or the wording")
+
+
+REVIEW_MODES = {"list": "All at once", "one": "One at a time"}
+
+
 def review(sess: Session, res) -> None:
-    with st.expander("Quick tips"):
-        st.markdown("- Each card asks one question; the buttons answer it, for every place it appears\n"
-                    "- Wrong type? Use **This is a** (Person / Company / Other)\n"
-                    "- **↶ Undo** (top right) reverses your last change, whatever it was\n"
-                    "- Missed something? Read & approve → **✎ Edit**, select it, **Redact**")
     queue = res.queue
     pending = [k for k in queue if res.item(k).status == "pending"]
+    # An item opened from the list goes back to the list once it's answered.
+    pick = st.session_state.get("review_pick")
+    if pick and pick not in pending:
+        st.session_state.pop("review_pick", None)
+        if st.session_state.pop("review_return", False):
+            st.session_state.review_mode = "list"
     bearing(len(queue) - len(pending), len(queue))
-    if pending and st.button("＋ Add files", key="rv_add"):
-        add_documents_dialog(sess)
+    if pending:
+        st.session_state.setdefault("review_mode", "list")
+        m1, _, m2 = st.columns([2.2, 1.6, 1], vertical_alignment="center")
+        with m1:
+            st.segmented_control("Show", list(REVIEW_MODES), key="review_mode", format_func=REVIEW_MODES.get,
+                                 label_visibility="collapsed",
+                                 on_change=lambda: st.session_state.pop("review_return", None))
+        if m2.button("＋ Add files", key="rv_add", width="stretch"):
+            add_documents_dialog(sess)
 
     if not pending:
         st.markdown('<h2>Everything is checked</h2>', unsafe_allow_html=True)
@@ -902,21 +1015,20 @@ def review(sess: Session, res) -> None:
             add_documents_dialog(sess)
         return
 
-    key = pending[0]
+    if (st.session_state.get("review_mode") or "list") == "list":
+        review_list(sess, res, pending)
+        return
+    key = pick if pick in pending else pending[0]
+    if st.session_state.get("review_return"):
+        st.button("← Back to the list", key="rv_back",
+                  on_click=lambda: st.session_state.update(review_mode="list", review_return=False,
+                                                           review_pick=None, editing=False))
     item = res.item(key)
     is_flag = key.startswith("F|")
     sentence = is_flag and getattr(item, "scope", "") == "sentence"
     doc, s, e, _ = item.mentions[0]
     docs = sorted({m[0] for m in item.mentions})
-    flag_title = next((f.title for f in sess.policy.flags if f.id == item.rule and f.title), "")
-    if is_flag:
-        etype = {"quasi.combination": "Could identify someone"}.get(item.rule, flag_title or "Needs a look")
-    elif item.rule == "names.public_company_party_check":
-        etype = "Public company · is it involved?"
-    elif getattr(item, "nick_target", ""):
-        etype = "Possible nickname"
-    else:
-        etype = f"{type_name(item.type)} · not sure"
+    etype = item_kind(sess, key, item)
     n = len(item.mentions)
     shown = item.text if is_flag else item.canonical
     st.markdown(
@@ -1512,21 +1624,13 @@ def documents(sess: Session, res) -> None:
     def step(delta: int) -> None:
         st.session_state.doc_pick = (st.session_state.doc_pick + delta) % n
 
-    def next_unapproved() -> None:
-        cur = st.session_state.doc_pick
-        todo = [i for i in list(range(cur + 1, n)) + list(range(cur)) if not is_current(sess, res, i)]
-        if todo:
-            st.session_state.doc_pick = todo[0]
-
-    st.markdown(f'<p class="count-top"><b>{approved}/{n}</b> approved</p><p class="ll-label">Read & approve</p>',
-                unsafe_allow_html=True)
-    d1, d2, d3, d4 = st.columns([4.4, .55, .55, 1.7], vertical_alignment="bottom")
+    bearing(approved, n, "Files", "approved")
+    d1, d2, d3 = st.columns([5.6, .6, .6], vertical_alignment="bottom")
     # A dropdown scales to large sets (type to search); ✓ marks approved documents.
     doc = d1.selectbox("Document", list(range(n)), key="doc_pick", label_visibility="collapsed",
                        format_func=lambda i: f"{'✓ ' if is_current(sess, res, i) else ''}{res.names[i]}")
     d2.button("←", on_click=step, args=(-1,), help="Previous file", width="stretch", key="prev_doc")
     d3.button("→", on_click=step, args=(1,), help="Next file", width="stretch", key="next_doc")
-    d4.button("Next to approve", on_click=next_unapproved, disabled=approved == n, width="stretch")
 
     search_panel(sess, res)
 
@@ -1594,7 +1698,7 @@ def documents(sess: Session, res) -> None:
     stale = doc in sess.approved and not is_current(sess, res, doc)
     open_here = [k for k in res.queue if res.item(k).status == "pending"
                  and any(m[0] == doc for m in res.item(k).mentions)]
-    a1, a2, _ = st.columns([1.7, 1.3, 1.5], vertical_alignment="center")
+    a1, a2 = st.columns([1.7, 2.8], vertical_alignment="center")
     if is_current(sess, res, doc):
         a1.button("✓ Approved · undo", width="stretch", key=f"unapprove_{doc}",
                   on_click=lambda: sess.unapprove(doc))
@@ -1610,9 +1714,11 @@ def documents(sess: Session, res) -> None:
 
         a1.button("✓ Approve again" if stale else ("✓ Approve and open next" if approved < n - 1 else "✓ Approve"),
                   type="primary", width="stretch", key=f"approve_{doc}", on_click=approve_and_advance)
-    if open_here:
-        a2.markdown(f'<span class="dim">{len(open_here)} item{"s" if len(open_here) != 1 else ""} in this file '
-                    'still need a look</span>', unsafe_allow_html=True)
+    with a2:  # the count again where you approve, so you don't scroll back up to see what's left
+        bearing(approved, n, "Files", "approved", tight=True)
+        if open_here:
+            st.markdown(f'<span class="dim">{len(open_here)} item{"s" if len(open_here) != 1 else ""} in this file '
+                        'still need a look</span>', unsafe_allow_html=True)
     if approved == n:
         st.success("Every file is approved.")
         st.button("Go to ④ Download →", type="primary", key="to_final",
@@ -1656,12 +1762,18 @@ def final_view(sess: Session, res) -> None:
         names = [res.names[d] for d, _ in items]
         outputs = [a["output"] for _, a in items]
         combined = "\n\n".join(f"{'=' * 72}\n{name}\n{'=' * 72}\n\n{out}" for name, out in zip(names, outputs))
+        st.markdown('<div style="height:.5rem"></div>', unsafe_allow_html=True)
+        st.session_state.setdefault("dl_format", "pdf")
+        fmt = st.segmented_control("File type", list(FORMATS), key="dl_format",
+                                   format_func=lambda f: FORMATS[f][0]) or "pdf"
         c1, c2, _ = st.columns([1.6, 1.6, 1.2])
-        c1.download_button(f"Download approved files (.zip, {len(items)})", buyer_zip(names, outputs),
+        # Built when clicked, not on every rerun: a PDF of a long set takes a moment.
+        c1.download_button(f"Download approved files (.zip, {len(items)})", lambda: buyer_zip(names, outputs, fmt),
                            "anonymized_package.zip", "application/zip", type="primary", disabled=blocked,
                            width="stretch")
-        c2.download_button("As one combined file", combined, "anonymized_package.txt", "text/plain",
-                           disabled=blocked, width="stretch")
+        c2.download_button(f"As one combined {FORMATS[fmt][0]} file",
+                           lambda: render_file(list(zip(names, outputs)), fmt), f"anonymized_package.{fmt}",
+                           FORMATS[fmt][1], disabled=blocked, width="stretch")
         st.caption("Only approved files are included. The label key is never in the download.")
         with st.expander(f"Approved files ({len(items)}) and preview"):
             for d, a in items:
@@ -1727,8 +1839,9 @@ else:
             view = st.segmented_control("Step", VIEWS, key="view", format_func=labels.get,
                                         label_visibility="collapsed") or "Review"
         can_undo = bool(getattr(sess, "undo_stack", None))
-        s2.button("↶ Undo", key="undo_top", on_click=undo, disabled=not can_undo, width="stretch",
-                  help=f"Undo: {sess.last_change}" if can_undo else "Nothing to undo yet")
+        if view in ("Review", "Documents"):  # where the edits and approvals happen
+            s2.button("↶ Undo", key="undo_top", on_click=undo, disabled=not can_undo, width="stretch",
+                      help=f"Undo: {sess.last_change}" if can_undo else "Nothing to undo yet")
     # Ask before leaving: nothing is saved, so a refresh would wipe the work.
     st.html("<script>window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue = ''; };</script>",
             unsafe_allow_javascript=True)

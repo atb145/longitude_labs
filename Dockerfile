@@ -1,6 +1,9 @@
 # Hugging Face Spaces (Docker SDK) — also runs as-is on Render, Railway, Fly.io.
 FROM python:3.12-slim
 
+# A Unicode font for PDF downloads.
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
+
 # Spaces run containers as user 1000.
 RUN useradd -m -u 1000 user
 USER user
