@@ -37,7 +37,7 @@ TYPE_COLORS = {  # restrained hues; used at low alpha so they read on cream and 
 VIEWS = ["Start", "Review", "Documents", "Final"]
 
 st.set_page_config(page_title="Longitude Anonymizer", page_icon="◐", layout="wide",
-                   initial_sidebar_state="expanded")
+                   initial_sidebar_state="auto")
 
 
 # --------------------------------------------------------------------------- style
@@ -75,7 +75,7 @@ def inject_css() -> None:
     .hero { text-align:center; max-width:760px; margin:2.2rem auto 2.6rem; }
     .hero h1 { font-size:clamp(2.4rem, 5.5vw, 3.6rem) !important; line-height:1.08; margin:0 0 1rem; padding:0; }
     .hero p { font-size:1.15rem; line-height:1.6; color:var(--dim); margin:0 auto; max-width:56ch; }
-    .steps { display:grid; grid-template-columns:repeat(3, 1fr); gap:1rem; margin:0 0 2.4rem; }
+    .steps { display:grid; grid-template-columns:repeat(4, 1fr); gap:1rem; margin:0 0 2.4rem; }
     .step { border:1px solid var(--rule); border-radius:1rem; padding:1.1rem 1.2rem; }
     .step b { display:block; font-family:var(--serif); font-size:1.15rem; font-weight:500; margin-bottom:.35rem; }
     .step span { color:var(--dim); font-size:.93rem; line-height:1.55; }
@@ -136,6 +136,28 @@ def inject_css() -> None:
     .gate { border:1px solid color-mix(in srgb, #c27a1a 45%, transparent); border-radius:.8rem; padding:.7rem 1rem;
             margin:.8rem 0; font-size:.9rem; }
     .gate ul { margin:.3rem 0 0 1.1rem; padding:0; } .gate li { margin:.15rem 0; color:var(--dim); }
+    .chip-long { white-space: normal; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+    .why { font-size: .92rem; line-height: 1.6; margin: .9rem 0 .4rem; max-width: 62ch; }
+    .why b { font-weight: 600; margin-right: .35rem; }
+    .keybox { border: 1px solid #c27a1a; background: color-mix(in srgb, #e0a050 14%, transparent);
+              border-radius: .8rem; padding: .7rem 1rem; margin: .8rem 0 .6rem; font-size: .92rem; max-width: 62ch; }
+    .sb-warn { font-size: .76rem; color: #c27a1a; margin: -.5rem 0 .8rem; line-height: 1.4; }
+    [data-testid="stSidebar"] [data-testid="stPopover"] button { justify-content: flex-start; text-align: left; }
+    [data-testid="stButtonGroup"] div:has(> button) { flex-wrap: wrap; row-gap: .3rem; }
+    [data-testid="stSidebar"] [data-testid="stPopover"] button p { text-align: left; }
+    /* Busy indicator: a "Working…" pill, top right, whenever the app is processing (fades in after .25s) */
+    [data-testid="stApp"][data-test-script-state="running"]::after {
+        content: "Working…"; position: fixed; top: .75rem; right: 1rem; z-index: 100000; box-sizing: border-box;
+        width: 7.4rem; padding: .38rem .9rem .38rem 2.1rem; border-radius: 999px; background: #272727;
+        color: #F7F3EA; font: 500 .8rem/1.2 "Libre Franklin", system-ui, sans-serif;
+        box-shadow: 0 2px 12px rgba(0,0,0,.18); animation: ll-fade .2s .25s both; }
+    [data-testid="stApp"][data-test-script-state="running"]::before {
+        content: ""; position: fixed; top: calc(.75rem + .48rem); right: calc(1rem + 7.4rem - 1.55rem);
+        z-index: 100001; width: .8rem; height: .8rem; box-sizing: border-box; border-radius: 50%;
+        border: 2px solid #A7DAEF; border-top-color: transparent;
+        animation: ll-fade .2s .25s both, ll-spin .8s linear infinite; }
+    @keyframes ll-spin { to { transform: rotate(360deg); } }
+    @keyframes ll-fade { from { opacity: 0; } to { opacity: 1; } }
     .count-top { font-size:.85rem; color:var(--dim); margin:0 0 .15rem; }
     .count-top b { color:var(--fg); font-weight:500; }
     .doc-count b { color:var(--fg); }
@@ -179,7 +201,8 @@ def inject_css() -> None:
     .stButton button[kind="primary"], .stDownloadButton button[kind="primary"], .stFormSubmitButton button {
         background:#A7DAEF !important; color:#272727 !important; border:1px solid #A7DAEF !important; }
     .stButton button:disabled, .stDownloadButton button:disabled, .stFormSubmitButton button:disabled {
-        opacity: .4 !important; cursor: not-allowed !important; filter: grayscale(.4); }
+        opacity: 1 !important; background: transparent !important; color: var(--dim) !important;
+        border: 1px dashed var(--rule) !important; cursor: not-allowed !important; }
     .stButton button[kind="primary"]:hover, .stDownloadButton button[kind="primary"]:hover,
     .stFormSubmitButton button:hover { background:#8fcbe4 !important; border-color:#8fcbe4 !important; }
     [data-testid="stFileUploaderDropzone"] { border:1px dashed var(--rule); background:transparent; border-radius:1rem; }
@@ -190,7 +213,7 @@ def inject_css() -> None:
     /* narrow content area (small window or sidebar open) — last, so it wins */
     @container (max-width: 760px) {
       .ll-coord { display: none; }
-      .steps { grid-template-columns: 1fr; }
+      .steps { grid-template-columns: 1fr 1fr; }
       .panes.n2 { grid-template-columns: 1fr; }
       .kv { grid-template-columns: 1fr; gap: .1rem 0; }
       .kv dt { padding-top: .55rem; }
@@ -201,6 +224,10 @@ def inject_css() -> None:
       .hero h1 { font-size: 2.1rem !important; }
       /* control rows wrap instead of truncating their labels */
       [data-testid="stHorizontalBlock"] { flex-wrap: wrap; row-gap: .5rem; }
+      .st-key-stepbar [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child,
+      .st-key-hits [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child { flex: 1 1 14rem !important; }
+      .st-key-hits [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child { flex: 0 0 5rem !important; min-width: 5rem; }
+      .st-key-stepbar [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child { flex: 0 0 6.5rem !important; min-width: 6.5rem; }
       [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex: 1 1 10rem !important; min-width: min(100%, 10rem); }
       .st-key-prev_doc, .st-key-next_doc { min-width: 3rem; }
       [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:has(.st-key-prev_doc),
@@ -228,7 +255,7 @@ def label(text: str, accent: str = "") -> None:
 
 def header() -> None:
     sess = st.session_state.get("session")
-    coord = f'<span class="ll-coord">{len(sess.names)} documents · {html.escape(sess.policy.name)} policy</span>' if sess else ""
+    coord = f'<span class="ll-coord">{len(sess.names)} files · {html.escape(sess.policy.name)} rules</span>' if sess else ""
     st.markdown(f'<div class="ll-head"><span class="ll-word">Longitude Anonymizer <span class="dim">— prototype</span></span>'
                 f'{coord}</div>{WAVE}', unsafe_allow_html=True)
 
@@ -247,14 +274,22 @@ def reset() -> None:
         st.session_state.pop(k, None)
 
 
-def decide(item_key: str, action: str, value: str = "") -> None:
-    st.session_state.session.decide(item_key, action, value)
+STATUS_WORDS = {"auto": "hidden automatically", "accepted": "you approved", "edited": "you changed it",
+                "pending": "needs a look", "manual": "hidden by you", "kept": "kept as written",
+                "public": "kept (public company)", "setting": "kept (setting)"}
+KIND_NAMES = {"PERSON": "Person", "ORGANIZATION": "Company", "MANUAL": "Other"}
+
+
+def decide(item_key: str, action: str, value: str = "", note: str = "") -> None:
+    st.session_state.session.decide(item_key, action, value, note=note)
     st.session_state.editing = False
 
 
 def undo() -> None:
-    st.session_state.session.undo()
+    what = st.session_state.session.undo()
     st.session_state.editing = False
+    if what:
+        st.session_state.focus_note = f"Undone: {what}"
 
 
 def type_name(t: str) -> str:
@@ -275,31 +310,32 @@ def examples(e, k: int = 3) -> str:
 
 
 def delete_entity(sess: Session, ent) -> None:
+    """'Don't hide this': a false detection; its text appears as written in every file (undoable)."""
     if ent.rule == "manual":
-        sess.unredact(ent.key)
+        sess.unredact(ent.key, note=f"Show “{ent.canonical}” again")
     else:
-        sess.delete(ent.key)
-    st.session_state.focus_note = f"Deleted “{ent.canonical}” — it's no longer treated as an entity"
+        sess.delete(ent.key, note=f"Show “{ent.canonical}” again")
+    st.session_state.focus_note = f"“{ent.canonical}” will appear as written — ↶ Undo if that was a mistake"
     st.session_state.editing = False
 
 
 def merge_into(sess: Session, src, dst) -> None:
-    sess.merge(src.key, dst.key)
+    sess.merge(src.key, dst.key, note=f"Treat “{src.canonical}” as {dst.label}")
     st.session_state.focus = dst.key
-    st.session_state.focus_note = f"{src.canonical} now joins {dst.label}"
+    st.session_state.focus_note = f"“{src.canonical}” is now {dst.label} everywhere"
 
 
 def do_split(sess: Session, ent, form: str, dest: str) -> None:
     if dest.startswith("new:"):
         new_type = None if dest[4:] == ent.type else dest[4:]
-        sess.split(ent.key, form, new_type)
+        sess.split(ent.key, form, new_type, note=f"Separate “{form}” from {ent.label}")
         st.session_state.focus = split_key(ent.key, ent.type, form, new_type)
-        where = f"a new {type_name(new_type or ent.type)} entry"
+        where = f"a new {KIND_NAMES.get(new_type or ent.type, type_name(new_type or ent.type)).lower()}"
     else:
-        sess.split(ent.key, form, None, dest)
+        sess.split(ent.key, form, None, dest, note=f"Move “{form}” out of {ent.label}")
         st.session_state.focus = dest
-        where = "the entity you picked"
-    st.session_state.focus_note = f"Moved every “{form}” variant out of {ent.label} into {where}"
+        where = "the one you picked"
+    st.session_state.focus_note = f"“{form}” is now separate from {ent.label} ({where})"
 
 
 def split_controls(sess: Session, res, ent, key: str) -> None:
@@ -309,17 +345,18 @@ def split_controls(sess: Session, res, ent, key: str) -> None:
         g = groups.setdefault(norm_form(ent.type, f), [[], 0])
         g[0].append(" ".join(f.split()))
         g[1] += cnt
-    form = st.selectbox("Variant to split off", list(groups), key=f"{key}_form",
-                        format_func=lambda n: f"{', '.join(groups[n][0])}  (×{groups[n][1]})")
+    form = st.selectbox("Which way of writing it is someone else?", list(groups), key=f"{key}_form", index=None,
+                        placeholder="Choose…", format_func=lambda n: f"{', '.join(groups[n][0])}  (×{groups[n][1]})")
     types = list(dict.fromkeys([ent.type, "PERSON", "ORGANIZATION"]
                                + [t for t, sp in sess.policy.entities.items() if sp.get("action") == "redact"] + ["MANUAL"]))
-    others = [e for e in res.entities if e.key != ent.key and e.is_redacted]
+    others = sorted((e for e in res.entities if e.key != ent.key and e.is_redacted),
+                    key=lambda e: (e.type != ent.type, e.label))
     dests = [f"new:{t}" for t in types] + [e.key for e in others]
     by = {e.key: e for e in others}
-    st.selectbox("Move to", dests, key=f"{key}_dest",
-                 format_func=lambda d: (f"New {type_name(d[4:])} entry" + (" (same type)" if d[4:] == ent.type else ""))
-                 if d.startswith("new:") else f"Existing: {by[d].label} — e.g. {examples(by[d])}")
-    st.button("Split off", key=f"{key}_go", width="stretch",
+    st.selectbox("It is…", dests, key=f"{key}_dest",
+                 format_func=lambda d: (f"A new {KIND_NAMES.get(d[4:], type_name(d[4:])).lower()}")
+                 if d.startswith("new:") else f"Same as {by[d].label} ({examples(by[d], 2)})")
+    st.button("Separate", key=f"{key}_go", width="stretch", disabled=form is None,
               on_click=lambda: do_split(sess, ent, groups[st.session_state[f"{key}_form"]][0][0],
                                         st.session_state[f"{key}_dest"]))
 
@@ -358,16 +395,19 @@ def apply_replacement(sess: Session, res, item_key: str, item, kind: str, value:
         merge_into(sess, item, res.entity(value))
     elif hasattr(item, "variants") and value.strip() and value.strip() != item.label:
         try:
-            sess.rename(item.key, value)
+            sess.rename(item.key, value, note=f"Rename “{item.canonical}” → “{value.strip()}”")
         except ValueError as exc:
             st.error(str(exc))
             return False
-        sess.decide(item_key, "accept")
         st.session_state.focus_note = f"{item.canonical} is now “{value.strip()}” in every document"
+        if item.status == "pending":
+            item_after = sess.run().item(item_key)
+            if item_after is not None and item_after.status == "pending":
+                sess.ops["decisions"][item_key] = {"action": "accept", "value": ""}  # part of the same change
     elif hasattr(item, "variants"):
-        sess.decide(item_key, "accept")
+        sess.decide(item_key, "accept", note=f"Accept “{item.canonical}”")
     else:
-        sess.decide(item_key, "edit", value.strip() or item.proposed)
+        sess.decide(item_key, "edit", value.strip() or item.proposed, note=f"Change wording of “{item.text[:40]}”")
     st.session_state.editing = False
     return True
 
@@ -413,36 +453,35 @@ def context_html(res, doc: int, start: int, end: int, neighbours: bool = True) -
 def home() -> None:
     st.markdown(
         '<div class="hero"><h1>Test our anonymization on your own documents</h1>'
-        '<p>Upload a document set. Get it back anonymized: one person, one pseudonym, in every file.</p></div>'
+        '<p>Upload a set of files. Get them back anonymized: one person, one label, in every file.</p></div>'
         '<div class="steps">'
-        '<div class="step"><i>1</i><b>Upload</b><span>PDF, Word, HTML or text. Read in memory, never saved.</span></div>'
-        '<div class="step"><i>2</i><b>Detect</b><span>Names, companies, accounts and dates are found; clear cases '
-        'are applied.</span></div>'
-        '<div class="step"><i>3</i><b>Review</b><span>Check the uncertain ones, approve, download.</span></div></div>',
+        '<div class="step"><i>1</i><b>Files</b><span>Add PDF, Word, HTML or text. Read in memory, never saved.</span></div>'
+        '<div class="step"><i>2</i><b>Check</b><span>Names, companies, accounts and dates are found. You check the '
+        'unsure ones.</span></div>'
+        '<div class="step"><i>3</i><b>Read & approve</b><span>Compare each file with the original.</span></div>'
+        '<div class="step"><i>4</i><b>Download</b><span>Get the approved files.</span></div></div>',
         unsafe_allow_html=True)
 
-    policies = available_policies()
-    names = list(policies)
-    label("Policy pack")
-    c1, c2 = st.columns([1, 1])
-    policy_name = c1.selectbox("Built-in pack", names, index=names.index("Finance") if "Finance" in names else 0)
-    custom = c2.file_uploader("Or upload your own (.yaml)", type=["yaml", "yml"], key="policy_upload")
-    pol = load_policy(policies[policy_name])
-    if custom is not None:
-        try:
-            pol = load_policy_text(custom.getvalue().decode("utf-8"), Path(custom.name).stem)
-            st.success(f"Using “{pol.name}” · {len(pol.buckets())} rules")
-        except (ValueError, UnicodeDecodeError) as exc:
-            st.error(str(exc))
-            pol = load_policy(policies[policy_name])
-    st.caption(pol.raw.get("description", ""))
-
-    label("Documents")
-    uploads = st.file_uploader("Documents", type=[s.strip(".") for s in SUPPORTED], accept_multiple_files=True,
+    label("Your files")
+    uploads = st.file_uploader("Files", type=[s.strip(".") for s in SUPPORTED], accept_multiple_files=True,
                                label_visibility="collapsed")
     rights = st.checkbox("I have the right to share these files, including for my client and any counterparties.",
                          key="rights_ok", help="Anonymizing doesn't cure privilege, NDAs or patient confidentiality.")
-    c1, c2, _ = st.columns([1.2, 1.3, 2])
+    policies = available_policies()
+    names = list(policies)
+    pol = load_policy(policies["Finance" if "Finance" in names else names[0]])
+    with st.expander(f"Advanced: rules for your industry ({pol.name})"):
+        policy_name = st.selectbox("Rules", names, index=names.index(pol.name) if pol.name in names else 0)
+        pol = load_policy(policies[policy_name])
+        st.caption(pol.raw.get("description", ""))
+        custom = st.file_uploader("Upload your own rules file (.yaml)", type=["yaml", "yml"], key="policy_upload")
+        if custom is not None:
+            try:
+                pol = load_policy_text(custom.getvalue().decode("utf-8"), Path(custom.name).stem)
+                st.success(f"Using “{pol.name}” · {len(pol.buckets())} rules")
+            except (ValueError, UnicodeDecodeError) as exc:
+                st.error(str(exc))
+    c1, c2, _ = st.columns([1.3, 1.3, 2])
     if c1.button("Anonymize my files", type="primary", disabled=not (uploads and rights), width="stretch"):
         try:
             start_session([(u.name, u.getvalue()) for u in uploads], pol, rights)
@@ -453,8 +492,10 @@ def home() -> None:
         start_session([(p.name, p.read_bytes()) for p in sorted(SAMPLES.glob("*")) if p.suffix in SUPPORTED], pol,
                       rights=True)  # fictional placeholder documents
         st.rerun()
-    st.markdown('<p class="ll-note" style="margin-top:1rem">Sample: a complaint, a staff memo and a settlement order '
-                'from one fictional matter.</p>', unsafe_allow_html=True)
+    if not (uploads and rights):
+        st.caption("Add files and tick the box to continue — or try the sample: a complaint, a staff memo and a "
+                   "settlement order from one fictional matter.")
+    st.caption("Nothing is saved. Refreshing or closing this tab clears your work — download first.")
 
 
 # --------------------------------------------------------------------------- sidebar
@@ -476,36 +517,85 @@ def forms_of(ent) -> list[tuple[str, str, int, list[int], tuple]]:
 
 
 def entity_popover(sess: Session, res, e, focus) -> None:
-    status = {"pending": " · review", "setting": " · off", "manual": " · manual"}.get(e.status, "")
+    status = {"pending": " · needs a look", "setting": " · off", "manual": " · by you"}.get(e.status, "")
     mark = "● " if e.key == focus else ""
-    with st.popover(f"{mark}{e.label} — {e.canonical[:26]} · {len(e.mentions)}×{status}", width="stretch"):
-        st.markdown("<br>".join(f"<span class='form'>{html.escape(f)}</span> <span class='dim'>×{n}</span>"
-                                for f, _, n, _, _ in forms_of(e)), unsafe_allow_html=True)
+    with st.popover(f"{mark}{e.label} · {e.canonical[:24]} ({len(e.mentions)}){status}", width="stretch"):
         docs = sorted({m[0] for m in e.mentions})
-        st.caption(f"In: {', '.join(sess.names[d] for d in docs)} · {e.rule}")
+        st.caption(f"{type_name(e.type)} · {STATUS_WORDS.get(e.status, e.status)} · in "
+                   f"{', '.join(short(sess.names[d], 22) for d in docs)}")
         if e.is_redacted and not e.nick_target:
             r1, r2 = st.columns([2.2, 1], vertical_alignment="bottom")
-            new = r1.text_input("Label", e.label, key=f"lbl-{e.key}", help="Used in every document.")
+            new = r1.text_input("Label", e.label, key=f"lbl-{e.key}", help="Replaces the name in every file.")
             if r2.button("Rename", key=f"rn-{e.key}", width="stretch") and new.strip() != e.label:
                 try:
-                    sess.rename(e.key, new)
+                    sess.rename(e.key, new, note=f"Rename {e.label} → “{new.strip()}”")
                     st.session_state.focus = e.key
                     st.session_state.focus_note = f"{e.canonical} is now “{new.strip()}”"
                     st.rerun()
                 except ValueError as exc:
                     st.error(str(exc))
-        st.markdown('<p class="ll-sub">Split a variant off</p>', unsafe_allow_html=True)
-        split_controls(sess, res, e, f"sb-{e.key}")
-        others = [o for o in res.entities if o.key != e.key and o.is_redacted]
+        st.markdown("<br>".join(f"<span class='form'>{html.escape(f)}</span> <span class='dim'>×{n}</span>"
+                                for f, _, n, _, _ in forms_of(e)), unsafe_allow_html=True)
+        if e.type in KIND_NAMES:
+            kinds = list(KIND_NAMES)
+            st.selectbox("This is a", kinds, index=kinds.index(e.type), format_func=KIND_NAMES.get,
+                         key=f"kind_{e.key}", on_change=lambda k=e.key, it=e: retype_from_widget(k, it))
+        if len(forms_of(e)) > 1:
+            st.markdown('<p class="ll-sub">Different people or things?</p>', unsafe_allow_html=True)
+            split_controls(sess, res, e, f"sb-{e.key}")
+        others = sorted((o for o in res.entities if o.key != e.key and o.is_redacted),
+                        key=lambda o: (o.type != e.type, o.label))
         if others:
-            st.markdown('<p class="ll-sub">Merge into another entry</p>', unsafe_allow_html=True)
-            names = {o.key: f"{o.label} — e.g. {examples(o)}" for o in others}
-            tgt = st.selectbox("Merge into", list(names), key=f"mv-{e.key}", format_func=names.get,
-                               label_visibility="collapsed")
-            st.button("Merge", key=f"mb-{e.key}", on_click=merge_into, width="stretch",
-                      args=(sess, e, next(o for o in others if o.key == tgt)))
-        st.button("🗑 Delete entity", key=f"del-{e.key}", on_click=delete_entity, args=(sess, e),
-                  width="stretch", help="False detection: keep the text as written.")
+            st.markdown('<p class="ll-sub">The same as another name?</p>', unsafe_allow_html=True)
+            names = {o.key: f"{o.label} ({examples(o, 2)})" for o in others}
+            tgt = st.selectbox("Same as", list(names), key=f"mv-{e.key}", format_func=names.get, index=None,
+                               placeholder="Choose who this is the same as…", label_visibility="collapsed")
+            st.button("Treat as the same", key=f"mb-{e.key}", on_click=merge_into, width="stretch",
+                      disabled=tgt is None, args=(sess, e, next((o for o in others if o.key == tgt), None)))
+        st.button("Don't hide this", key=f"del-{e.key}", on_click=delete_entity, args=(sess, e),
+                  width="stretch", help="Not a real name? It will appear as written in every file.")
+
+
+def party_hits(res, name: str) -> tuple[int, int]:
+    """How often a known party's name is found (occurrences, files)."""
+    hits = search(res, name)
+    return len(hits), len({h["doc"] for h in hits})
+
+
+def known_parties_form(sess: Session, res, key: str, compact: bool = False) -> None:
+    """Add a name, pick what it is, see how often it's found; remove with ×. Always hidden, in every spelling."""
+    kinds = {"ORGANIZATION": "Company", "PERSON": "Person", "MANUAL": "Other (codename, project…)"}
+    with st.form(f"{key}_form", border=False, clear_on_submit=True):
+        c1, c2, c3 = st.columns([2.4, 1.4, .9] if not compact else [1, 1, 1], vertical_alignment="bottom")
+        name = c1.text_input("Name", placeholder="e.g. Project Falcon, Acme Bank, Jane Doe", key=f"{key}_name")
+        kind = c2.selectbox("What is it?", list(kinds), format_func=kinds.get, key=f"{key}_kind")
+        if c3.form_submit_button("Add", type="primary", width="stretch") and name.strip():
+            sess.add_party(name, kind)
+            st.session_state.focus_note = f"“{name.strip()}” will be hidden in every file"
+            st.rerun()
+    for i, party in enumerate(sess.ops.get("parties", [])):
+        found, files = party_hits(res, party["name"])
+        r1, r2 = st.columns([5, 1], vertical_alignment="center")
+        r1.markdown(f'<span class="form">{html.escape(party["name"])}</span> '
+                    f'<span class="dim">{kinds.get(party["type"], "Other").split(" (")[0]} · '
+                    + (f'found {found}× in {files} file{"s" if files != 1 else ""}' if found else "not found yet")
+                    + '</span>', unsafe_allow_html=True)
+        r2.button("×", key=f"{key}_rm_{i}", help=f"Stop always hiding “{party['name']}”",
+                  on_click=sess.remove_party, args=(party["name"],))
+
+
+def date_explainer(res, mode: str) -> str:
+    dates = sorted((e for e in res.entities if e.type == "DATE"), key=lambda e: e.mentions[0][:2])[:2]
+    ex = " · ".join(f"{' '.join(e.mentions[0][3].split())} → {e.proposed if e.status != 'setting' else e.mentions[0][3]}"
+                    for e in dates)
+    text = {"month_year": "Each date becomes its month and year. Simple, but events in the same month look "
+                          "like they happened together.",
+            "shifted": "Every date moves by the same hidden number of days, so the gaps between events stay "
+                       "true (trades 6 days apart are still 6 days apart) while the real dates are hidden.",
+            "relative": "Dates become days counted from the earliest date in your files (Day 0, Day 6…). "
+                        "Order and gaps stay true; no calendar dates are shown.",
+            "exact": "Dates stay as written."}[mode]
+    return text + (f" Example from your files: {ex}." if ex and mode != "exact" else "")
 
 
 def sidebar(sess: Session, res) -> None:
@@ -513,8 +603,10 @@ def sidebar(sess: Session, res) -> None:
     focus = st.session_state.get("focus")
     s = sess.settings
     with st.sidebar:
-        st.markdown(f'<p class="sb-title">{html.escape(sess.policy.name)} policy · '
-                    f'{len(res.names)} document{"s" if len(res.names) != 1 else ""}</p>', unsafe_allow_html=True)
+        st.markdown(f'<p class="sb-title">{html.escape(sess.policy.name)} rules · '
+                    f'{len(res.names)} file{"s" if len(res.names) != 1 else ""}</p>'
+                    '<p class="sb-warn">Nothing is saved — refreshing or closing this tab clears your work.</p>',
+                    unsafe_allow_html=True)
 
         # ---- Settings
         with st.expander("⚙ Settings"):
@@ -525,16 +617,17 @@ def sidebar(sess: Session, res) -> None:
                           "relative": "Relative (Day 0, Day 6…)", "exact": "Exact"}
             styles = {"labels": "Labels (Person A, Acquirer…)", "redacted": "[REDACTED]", "remove": "Remove the text"}
             st.session_state.setdefault("t_style", s.get("placeholder_style", "labels"))
-            st.selectbox("Placeholders", list(styles), key="t_style", format_func=styles.get,
-                         help="Labels keep the link between mentions. [REDACTED] or removing gives nothing back.")
+            st.selectbox("Label style", list(styles), key="t_style", format_func=styles.get,
+                         help="Labels show when two mentions are the same. [REDACTED] or removing gives nothing back.")
             st.session_state.setdefault("t_dates", s.get("date_mode", "month_year"))
             st.selectbox("Dates", list(date_modes), key="t_dates", format_func=date_modes.get)
+            st.caption(date_explainer(res, st.session_state.t_dates))
             pub_modes = {"review": "Ask if it's a party", "keep": "Always keep", "redact": "Always redact"}
             st.session_state.setdefault("t_pub", s.get("public_companies", "review"))
             st.selectbox("Public companies", list(pub_modes), key="t_pub", format_func=pub_modes.get)
             st.session_state.setdefault("t_addr", s.get("generalize_addresses", True))
             st.toggle("Addresses → city, state", key="t_addr", help="When the document gives no caption.")
-            with st.popover("Change policy pack", width="stretch"):
+            with st.popover("Change rules (policy pack)", width="stretch"):
                 policies = available_policies()
                 pick = st.selectbox("Built-in pack", list(policies), key="swap_pick")
                 up = st.file_uploader("Or upload (.yaml)", type=["yaml", "yml"], key="swap_upload")
@@ -555,20 +648,9 @@ def sidebar(sess: Session, res) -> None:
 
         # ---- Known parties
         n_parties = len(sess.ops.get("parties", []))
-        with st.expander(f"Known parties ({n_parties})"):
-            st.caption("Client, counterparties, codenames — always redacted.")
-            kinds = ["ORGANIZATION", "PERSON", "MANUAL"]
-            current = pd.DataFrame(sess.ops.get("parties") or [], columns=["name", "type"])
-            edited = st.data_editor(
-                current, num_rows="dynamic", hide_index=True, key="parties_editor", width="stretch",
-                column_config={"name": st.column_config.TextColumn("Name", required=True),
-                               "type": st.column_config.SelectboxColumn("Type", options=kinds, default="ORGANIZATION",
-                                                                        required=True)})
-            if st.button("Apply parties", width="stretch"):
-                sess.set_parties([{"name": str(r["name"]).strip(), "type": r["type"] or "ORGANIZATION"}
-                                  for r in edited.to_dict("records") if r.get("name") and str(r["name"]).strip()])
-                st.session_state.focus_note = "Known parties applied"
-                st.rerun()
+        with st.expander(f"Always hide these names ({n_parties})"):
+            st.caption("Client, counterparties, codenames — hidden in every file and every spelling.")
+            known_parties_form(sess, res, "sb_parties", compact=True)
 
         # ---- Rules
         groups: dict[str, list] = {}
@@ -587,7 +669,7 @@ def sidebar(sess: Session, res) -> None:
         for e in res.entities:
             by_type.setdefault(e.type, []).append(e)
         focus_type = next((e.type for e in res.entities if e.key == focus), None)
-        with st.expander(f"Entities ({len(res.entities)})", expanded=bool(focus_type)):
+        with st.expander(f"Names & labels ({len(res.entities)})", expanded=bool(focus_type)):
             pending = [e for e in res.entities if e.status == "pending"]
             options = (["__review__"] if pending else []) + list(by_type)
             if focus_type and st.session_state.get("_ent_focus_seen") != focus:
@@ -595,7 +677,7 @@ def sidebar(sess: Session, res) -> None:
                 st.session_state._ent_focus_seen = focus
             if st.session_state.get("ent_type") not in options:
                 st.session_state.ent_type = options[0] if options else None
-            eq = st.text_input("Find an entity", key="ent_search", label_visibility="collapsed",
+            eq = st.text_input("Find a name", key="ent_search", label_visibility="collapsed",
                                placeholder="🔍 Find a name or label…").strip().lower()
             if eq:
                 found = [e for e in res.entities if eq in e.label.lower() or eq in e.canonical.lower()
@@ -611,8 +693,8 @@ def sidebar(sess: Session, res) -> None:
                     entity_popover(sess, res, e, focus)
 
         st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
-        st.button("Start over", on_click=reset, width="stretch")
-        st.caption("Light / dark: ⋮ → Settings → Theme")
+        if st.button("Start over", width="stretch", key="sb_start_over"):
+            confirm_start_over()
 
 
 # --------------------------------------------------------------------------- adding documents / start
@@ -644,23 +726,42 @@ def add_documents_dialog(sess: Session) -> None:
     add_documents_form(sess, "dlg_add")
 
 
+@st.dialog("Start over?")
+def confirm_start_over() -> None:
+    st.write("This clears every file and every decision. Download what you need first.")
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, start over", type="primary", width="stretch"):
+        reset()
+        st.rerun()
+    if c2.button("Cancel", width="stretch"):
+        st.rerun()
+
+
 def start_view(sess: Session, res) -> None:
-    """Step 1 while a set is open: what's in it, add more, or start again."""
-    st.markdown('<h2>Your document set</h2>', unsafe_allow_html=True)
-    rows = [{"document": name, "status": ("✓ approved" if is_current(sess, res, i) else
-                                          "changed since approval" if i in sess.approved else "in progress"),
-             "redactions": len(res.segments[i]),
+    """Step 1 while a set is open: the files, names to always hide, labels, add more."""
+    st.markdown('<h2>Your files</h2>', unsafe_allow_html=True)
+    rows = [{"file": name, "status": ("✓ approved" if is_current(sess, res, i) else
+                                      "changed since approval" if i in sess.approved else "in progress"),
+             "hidden": len([g for g in res.segments[i] if g.kind != "tidy"]),
              "notes": "; ".join(w["message"] for w in (sess.warnings[i] if i < len(getattr(sess, 'warnings', []) or []) else []))}
             for i, name in enumerate(res.names)]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    c1, c2, _ = st.columns([1.4, 1.2, 2])
-    c1.button("Continue reviewing →", type="primary", width="stretch",
-              on_click=lambda: st.session_state.update(view="Review"))
-    c2.button("Start a new set", width="stretch", on_click=reset,
-              help="Clears everything. Download first.")
+    open_items = sum(res.item(k).status == "pending" for k in res.queue)
+    n_ok = sum(is_current(sess, res, i) for i in range(len(res.names)))
+    nxt = (("Continue checking →", "Review") if open_items else
+           ("Read & approve →", "Documents") if n_ok < len(res.names) else ("Go to download →", "Final"))
+    c1, c2, _ = st.columns([1.5, 1.2, 2])
+    c1.button(nxt[0], type="primary", width="stretch", on_click=lambda v=nxt[1]: st.session_state.update(view=v))
+    if c2.button("Start over", width="stretch", key="files_start_over"):
+        confirm_start_over()
+    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+    label("Names to always hide")
+    st.caption("Know who the parties are? Add them — every spelling is hidden in every file, whatever the "
+               "detectors find. Most reliable for clients, counterparties and codenames.")
+    known_parties_form(sess, res, "files_parties")
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     label("Labels")
-    st.caption("Rename a pseudonym (Company B → Receiving bank). Labels are unique; merge to combine.")
+    st.caption("Rename a label (Company B → Receiving bank). Each label is used for one name only.")
     ents = [e for e in res.entities if e.is_redacted and e.type in ("PERSON", "ORGANIZATION", "MANUAL")
             and not e.nick_target]
     table = pd.DataFrame([{"label": e.label, "type": type_name(e.type), "examples": examples(e),
@@ -675,7 +776,8 @@ def start_view(sess: Session, res) -> None:
             for (_, before), (_, after) in zip(table.iterrows(), edited.iterrows()):
                 if str(after["label"]).strip() and str(after["label"]).strip() != before["label"]:
                     try:
-                        sess.rename(before["_key"], str(after["label"]))
+                        sess.rename(before["_key"], str(after["label"]),
+                                    note=f"Rename {before['label']} → “{str(after['label']).strip()}”")
                         changed += 1
                     except ValueError as exc:
                         errors.append(str(exc))
@@ -685,7 +787,7 @@ def start_view(sess: Session, res) -> None:
                 st.session_state.focus_note = f"Renamed {changed} label{'s' if changed != 1 else ''}"
                 st.rerun()
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
-    label("Add documents to this set")
+    label("Add files to this set")
     add_documents_form(sess, "start_add")
 
 
@@ -701,94 +803,140 @@ def bearing(done: int, total: int) -> None:
 
 def review(sess: Session, res) -> None:
     with st.expander("Quick tips"):
-        st.markdown("- **Accept** the proposal · **Keep original** · **Edit** to rename (applies everywhere)\n"
-                    "- Two people merged by mistake? **Split a variant off**\n"
-                    "- **Back** undoes your last decision\n"
-                    "- Missed something? Documents → **✎ Edit**, select it, **Redact**")
+        st.markdown("- Each card asks one question; the buttons answer it, for every place it appears\n"
+                    "- Wrong type? Use **This is a** (Person / Company / Other)\n"
+                    "- **↶ Undo** (top right) reverses your last change, whatever it was\n"
+                    "- Missed something? Read & approve → **✎ Edit**, select it, **Redact**")
     queue = res.queue
     pending = [k for k in queue if res.item(k).status == "pending"]
     bearing(len(queue) - len(pending), len(queue))
-
-    if st.button("＋ Add documents", key="rv_add"):
+    if pending and st.button("＋ Add files", key="rv_add"):
         add_documents_dialog(sess)
 
     if not pending:
-        st.markdown('<h2>Everything is reviewed</h2>', unsafe_allow_html=True)
-        st.markdown(f'<p class="ll-note">{sum(e.status == "auto" for e in res.entities)} clear cases were applied '
-                    'automatically. Next: read and approve each document.</p>', unsafe_allow_html=True)
-        c1, c2, c3, _ = st.columns([1.5, 1.3, .8, 1.4])
-        c1.button("Continue to documents →", type="primary", width="stretch",
+        st.markdown('<h2>Everything is checked</h2>', unsafe_allow_html=True)
+        st.markdown(f'<p class="ll-note">{sum(e.status == "auto" for e in res.entities)} clear cases were hidden '
+                    'automatically. Next: read each file and approve it.</p>', unsafe_allow_html=True)
+        c1, c2, _ = st.columns([1.6, 1.4, 1.6])
+        c1.button("Read & approve →", type="primary", width="stretch",
                   on_click=lambda: st.session_state.update(view="Documents"))
-        if c2.button("＋ Add documents", width="stretch", key="rv_add_done"):
+        if c2.button("＋ Add files", width="stretch", key="rv_add_done"):
             add_documents_dialog(sess)
-        c3.button("Back", on_click=undo, disabled=not sess.ops["history"], width="stretch")
         return
 
     key = pending[0]
     item = res.item(key)
     is_flag = key.startswith("F|")
+    sentence = is_flag and getattr(item, "scope", "") == "sentence"
     doc, s, e, _ = item.mentions[0]
     docs = sorted({m[0] for m in item.mentions})
-    flag_kinds = {"quasi.combination": "Identifying combination", "rights.privileged": "Possibly privileged",
-                  "flag.group_inference": "Group inference", "flag.family_relationship": "Relationship phrase",
-                  "flag.role_at_named_entity": "Role at a named entity"}
+    flag_title = next((f.title for f in sess.policy.flags if f.id == item.rule and f.title), "")
     if is_flag:
-        etype = f"{flag_kinds.get(item.rule, 'Flag')} · review"
+        etype = {"quasi.combination": "Could identify someone"}.get(item.rule, flag_title or "Needs a look")
     elif item.rule == "names.public_company_party_check":
-        etype = "Public company · is it a party?"
+        etype = "Public company · is it involved?"
     elif getattr(item, "nick_target", ""):
         etype = "Possible nickname"
     else:
-        etype = f"{type_name(item.type)} · low confidence"
+        etype = f"{type_name(item.type)} · not sure"
     n = len(item.mentions)
+    shown = item.text if is_flag else item.canonical
     st.markdown(
-        f'<div class="card"><div class="card-top"><span class="card-type">{etype}</span>'
-        f'<span class="dim">{html.escape(res.names[doc])} · first of {n} occurrence{"s" if n != 1 else ""}</span></div>'
+        f'<div class="card"><div class="card-top"><span class="card-type">{html.escape(etype)}</span>'
+        f'<span class="dim">{html.escape(res.names[doc])} · {n} place{"s" if n != 1 else ""}</span></div>'
         f'<div class="card-ctx">{context_html(res, doc, s, e)}</div>'
         '<dl class="kv">'
-        + ("" if is_flag and getattr(item, "scope", "") == "sentence" else
-           f'<dt>Found</dt><dd class="big">{html.escape(item.text if is_flag else item.canonical)}</dd>') +
-        f'<dt>Proposed</dt><dd class="big">{html.escape(item.proposed)}</dd>'
-        f'<dt>Why</dt><dd>{html.escape(item.reason)} <span class="rule-id">Rule: {html.escape(item.rule)}</span></dd>'
-        f'<dt>Applies to</dt><dd>{n} occurrence{"s" if n != 1 else ""} in '
-        f'{html.escape(", ".join(res.names[d] for d in docs))}</dd>'
-        '</dl></div>', unsafe_allow_html=True)
+        + ("" if sentence else f'<dt>Found</dt><dd class="big">{html.escape(shown)}</dd>')
+        + (f'<dt>Becomes</dt><dd class="big">{html.escape(item.proposed)}</dd>' if not sentence
+           or item.rule != "quasi.combination" else "")
+        + '</dl></div>', unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns([1, 1.2, 1.35, .75])
-    c1.button("Accept", type="primary", on_click=decide, args=(key, "accept"), width="stretch")
-    c2.button("Keep original", on_click=decide, args=(key, "keep"), width="stretch")
-    if c3.button("Edit replacement", width="stretch"):
-        st.session_state.editing = True
-    c4.button("Back", on_click=undo, disabled=not sess.ops["history"], width="stretch")
-
-    if st.session_state.get("editing"):
-        forms = forms_of(item)
-        st.markdown(f'<p class="ll-label" style="margin-top:1.2rem">Your replacement will cover '
-                    f'{len(forms)} variant{"s" if len(forms) != 1 else ""} of this name</p>', unsafe_allow_html=True)
-        for f, _, cnt, fdocs, (md, ms, me, _) in forms:
-            st.markdown(
-                f'<div class="form-row"><span class="form">{html.escape(f)}</span> '
-                f'<span class="dim">×{cnt} · {html.escape(", ".join(res.names[d] for d in fdocs))}</span>'
-                f'<div class="form-ctx">{context_html(res, md, ms, me, neighbours=False)}</div></div>',
-                unsafe_allow_html=True)
-        kind, value = replacement_picker(res, item, f"rp-{key}", getattr(item, "label", "") or item.proposed)
-        b1, b2, _ = st.columns([1.2, 1, 3], vertical_alignment="bottom")
-        if b1.button("Apply to all variants", type="primary", width="stretch"):
-            if apply_replacement(sess, res, key, item, kind, value):
+    editing = st.session_state.get("editing")
+    note = f"“{shown[:40]}”"
+    if not editing:
+        # Buttons that answer the card's question, right under it
+        if item.rule == "quasi.combination":
+            labels = ("Rewrite sentence", "It's fine as is")
+        elif item.rule == "rights.privileged":
+            labels = ("Withhold this sentence", "I have consent — keep it")
+        elif sentence:
+            labels = ("Use the suggested wording", "Keep as written")
+        elif item.rule == "names.public_company_party_check":
+            labels = ("Yes, hide it", "No, keep the name")
+        elif getattr(item, "nick_target", ""):
+            labels = (f"Yes — it's {item.proposed}", "No, someone else")
+        else:
+            labels = (f"Use “{item.proposed[:28]}”", "Keep as written")
+        c1, c2, c3 = st.columns([1.5, 1.3, 1.1])
+        if item.rule == "quasi.combination":
+            if c1.button(labels[0], type="primary", width="stretch", key=f"rw_{key}"):
+                st.session_state.editing = True
                 st.rerun()
+        else:
+            c1.button(labels[0], type="primary", width="stretch", on_click=decide,
+                      args=(key, "accept", "", f"Accept {note}"))
+        c2.button(labels[1], width="stretch", on_click=decide, args=(key, "keep", "", f"Keep {note}"))
+        if not sentence or item.rule != "quasi.combination":
+            if c3.button("Change label" if not is_flag else "Change wording", width="stretch", key=f"chg_{key}"):
+                st.session_state.editing = True
+                st.rerun()
+        if not is_flag and item.type in KIND_NAMES:
+            t1, _ = st.columns([1.4, 3])
+            kinds = list(KIND_NAMES)
+            t1.selectbox("This is a", kinds, index=kinds.index(item.type), format_func=KIND_NAMES.get,
+                         key=f"kind_{key}", on_change=lambda k=key, it=item: retype_from_widget(k, it))
+    else:
+        if sentence:
+            val = st.text_area("Rewrite the sentence", item.custom or item.proposed, height=120, key=f"ta_{key}")
+            b1, b2, _ = st.columns([1.3, 1, 2.5])
+            if b1.button("Save sentence", type="primary", width="stretch"):
+                decide(key, "edit", val.strip() or item.proposed, f"Rewrite {note}")
+                st.rerun()
+        elif is_flag:
+            val = st.text_input("New wording", item.custom or item.proposed, key=f"tw_{key}")
+            b1, b2, _ = st.columns([1.3, 1, 2.5])
+            if b1.button("Save wording", type="primary", width="stretch"):
+                decide(key, "edit", val.strip() or item.proposed, f"Change wording of {note}")
+                st.rerun()
+        else:
+            forms = forms_of(item)
+            if len(forms) > 1:
+                st.markdown(f'<p class="ll-label" style="margin-top:1rem">The label covers {len(forms)} ways this '
+                            'name is written</p>', unsafe_allow_html=True)
+                for f, _, cnt, fdocs, (md, ms, me, _) in forms:
+                    st.markdown(
+                        f'<div class="form-row"><span class="form">{html.escape(f)}</span> '
+                        f'<span class="dim">×{cnt} · {html.escape(", ".join(res.names[d] for d in fdocs))}</span>'
+                        f'<div class="form-ctx">{context_html(res, md, ms, me, neighbours=False)}</div></div>',
+                        unsafe_allow_html=True)
+            kind, value = replacement_picker(res, item, f"rp-{key}", getattr(item, "label", "") or item.proposed)
+            b1, b2, _ = st.columns([1.3, 1, 2.5], vertical_alignment="bottom")
+            if b1.button("Save label", type="primary", width="stretch"):
+                if apply_replacement(sess, res, key, item, kind, value):
+                    st.rerun()
+            if len(forms) > 1:
+                with st.expander("These are different people or things → split one off"):
+                    split_controls(sess, res, item, f"rv-{key}")
         if b2.button("Cancel", width="stretch"):
             st.session_state.editing = False
             st.rerun()
-        if not is_flag:
-            with st.expander("Split a variant off into another entry"):
-                split_controls(sess, res, item, f"rv-{key}")
 
+    st.markdown(f'<div class="why"><b>Why</b> {html.escape(item.reason)}<br><span class="dim">Appears {n}× in '
+                f'{html.escape(", ".join(res.names[d] for d in docs))}</span></div>', unsafe_allow_html=True)
     if n > 1:
-        with st.expander(f"See all {n} occurrences"):
+        with st.expander(f"See all {n} places"):
             for md, ms, me, _ in item.mentions:
                 st.markdown(f'<div class="form-row"><span class="dim">{html.escape(res.names[md])}</span>'
                             f'<div class="form-ctx">{context_html(res, md, ms, me, neighbours=False)}</div></div>',
                             unsafe_allow_html=True)
+
+
+def retype_from_widget(key: str, item) -> None:
+    new = st.session_state.get(f"kind_{key}")
+    if new and new != item.type:
+        sess = st.session_state.session
+        sess.retype(item.key, new, note=f"“{item.canonical}” is a {KIND_NAMES[new].lower()}")
+        st.session_state.focus_note = f"“{item.canonical}” is now treated as a {KIND_NAMES[new].lower()}"
 
 
 # --------------------------------------------------------------------------- documents
@@ -841,32 +989,40 @@ def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False, q
     for g in res.segments[doc]:
         out.append(_plain(text[pos:g.start], line, leaks, rx_plain))
         hitcls = " hit-chip" if rx_plain is not None and rx_plain.search(html.escape(" ".join(g.original.split()))) else ""
+        if g.kind == "tidy":  # wording tidy-ups ("On" → "In", a repeated label dropped): no chip
+            out.append(_plain(g.original, line) if version == "original"
+                       else html.escape(g.replacement) + _anchors(g.original, line))
+            pos = g.end
+            continue
+        long_cls = " chip-long" if len(g.replacement) > 40 else ""
         if g.kind == "flag":
             changed = g.status in ("accepted", "edited")
             if version == "original":
-                tip = f"Becomes: {g.replacement}" if changed else f"Flagged relationship phrase ({g.status})"
+                tip = f"Becomes: {g.replacement}" if changed else "Flagged — needs a look"
                 out.append(f'<span class="flag" title="{html.escape(tip)}">{_plain(g.original, line)}</span>')
             elif changed:
-                out.append(f'<span class="chip t-FLAG" title="Original: {html.escape(g.original)}" '
+                out.append(f'<span class="chip t-FLAG{long_cls}" title="Original: {html.escape(g.original)}" '
                            f'data-orig="{html.escape(" ".join(g.original.split()), quote=True)}">'
                            f'{html.escape(g.replacement)}</span>{_anchors(g.original, line)}')
             else:
-                out.append(f'<span class="flag" title="Flagged relationship phrase ({g.status})">{_plain(g.original, line)}</span>')
+                out.append(f'<span class="flag" title="Flagged — needs a look">{_plain(g.original, line)}</span>')
             if edit and version == "anonymized":
                 out.append(_pencil("F|" + g.ref))
         else:
             e = by_key[g.ref]
             cls = "kept" if not e.is_redacted else ("pending" if e.status == "pending" else "")
             if version == "original":
-                tip = f"{e.label} · becomes “{g.replacement}” · {e.status}" if e.is_redacted else f"Kept · {e.rule}"
+                tip = (f"Becomes “{g.replacement}” · {STATUS_WORDS.get(e.status, e.status)}" if e.is_redacted
+                       else STATUS_WORDS.get(e.status, "Kept as written").capitalize())
                 out.append(f'<span class="orig t-{color_type(g.type)} {cls}{hitcls}" title="{html.escape(tip)}">{_plain(g.original, line)}</span>')
             elif e.is_redacted:
-                tip = f"Original: {g.original} · {e.label} · {e.status}"
-                out.append(f'<span class="chip t-{color_type(g.type)} {cls}{hitcls}" title="{html.escape(tip)}" '
+                tip = f"Original: {' '.join(g.original.split())} · {STATUS_WORDS.get(e.status, e.status)}"
+                out.append(f'<span class="chip t-{color_type(g.type)} {cls}{hitcls}{long_cls}" title="{html.escape(tip)}" '
                            f'data-orig="{html.escape(" ".join(g.original.split()), quote=True)}">'
                            f'{html.escape(g.replacement)}</span>{_anchors(g.original, line)}')
             else:
-                out.append(f'<span class="chip kept" title="Kept · {html.escape(e.rule)}">{_plain(g.original, line)}</span>')
+                out.append(f'<span class="chip kept" title="{html.escape(STATUS_WORDS.get(e.status, "kept as written").capitalize())}">'
+                           f'{_plain(g.original, line)}</span>')
             if edit and version == "anonymized":
                 out.append(_pencil("E|" + g.ref))
         pos = g.end
@@ -978,14 +1134,15 @@ doc_panes = st.components.v2.component("doc_panes", js=DOC_JS, isolate_styles=Fa
 
 
 def show_leak(lk: dict) -> None:
-    """Jump to the document with the leak; the anonymized pane highlights it and scrolls to it."""
+    """Jump to the document with the leak (highlighted, scrolled to) and open its name in the sidebar."""
     st.session_state.update(view="Documents", doc_pick=lk["doc"], doc_layout="Side by side",
-                            leak_focus=lk["text"])
+                            leak_focus=lk["text"], focus=lk["key"], ent_search="")
+    st.session_state.pop("_ent_focus_seen", None)
 
 
 def fix_leak(sess: Session, lk: dict) -> None:
     """Add the leaked wording to its entity, so it gets the same pseudonym everywhere."""
-    sess.redact_as(lk["key"], lk["text"])
+    sess.redact_as(lk["key"], lk["text"], note=f"Hide “{lk['text']}” as {lk['label']}")
     st.session_state.focus_note = f"“{lk['text']}” is now redacted as {lk['label']} everywhere"
 
 
@@ -1000,6 +1157,9 @@ def release_box(sess: Session, res) -> list[str]:
     if blockers:
         st.markdown('<div class="gate"><b>Before download</b><ul>'
                     + "".join(f"<li>{html.escape(b)}</li>" for b in blockers) + "</ul></div>", unsafe_allow_html=True)
+        if any(b.startswith("Finish review") for b in blockers) and st.session_state.get("view") != "Review":
+            st.button("Go to ② Check →", key=f"gate_review_{st.session_state.get('view', '')}",
+                      on_click=lambda: st.session_state.update(view="Review"))
         leaks = consistency_check(res)["leak_items"]
         if leaks:
             st.markdown('<p class="ll-sub">Where the original text is still showing</p>', unsafe_allow_html=True)
@@ -1077,7 +1237,7 @@ def redact_dialog(sess: Session, res, payload: dict) -> None:
     ready = not (kind == "OTHER" and not desc and rk == "new")
     if c1.button("Redact everywhere", type="primary", width="stretch", disabled=not ready):
         if rk == "existing":
-            sess.redact_as(rv, phrase)
+            sess.redact_as(rv, phrase, note=f"Hide “{phrase[:40]}”")
         elif kind == "OTHER":
             sess.redact(phrase, f"OTHER:{desc}", rv.strip(), f"{desc} {{1}}")
         else:
@@ -1090,7 +1250,7 @@ def redact_dialog(sess: Session, res, payload: dict) -> None:
         st.caption("Describe it to create the label.")
 
 
-@st.dialog("Change a redaction")
+@st.dialog("Change label")
 def edit_dialog(sess: Session, res, ref: str) -> None:
     item = res.item(ref)
     if item is None:
@@ -1099,27 +1259,32 @@ def edit_dialog(sess: Session, res, ref: str) -> None:
     is_flag = ref.startswith("F|")
     forms = forms_of(item)
     current = item.replacement_for(item.text if is_flag else item.canonical)
-    st.markdown(f'<span class="card-type">{"Relationship phrase" if is_flag else type_name(item.type)}'
-                f'</span>', unsafe_allow_html=True)
     st.markdown("".join(
         f'<div class="form-row"><span class="form">{html.escape(f)}</span> <span class="dim">×{n} · '
-        f'{html.escape(", ".join(res.names[d] for d in docs))}</span></div>' for f, _, n, docs, _ in forms),
+        f'{html.escape(", ".join(short(res.names[d], 22) for d in docs))}</span></div>' for f, _, n, docs, _ in forms),
         unsafe_allow_html=True)
-    st.caption(f"Shown as “{current}” · {item.rule} · changes apply everywhere")
+    st.caption(f"Now shown as “{current}”. Changes apply in every file.")
+    if not is_flag and item.type in KIND_NAMES:
+        kinds = list(KIND_NAMES)
+        st.selectbox("This is a", kinds, index=kinds.index(item.type), format_func=KIND_NAMES.get,
+                     key=f"kind_dlg_{item.key}",
+                     on_change=lambda: (sess.retype(item.key, st.session_state[f"kind_dlg_{item.key}"],
+                                                    note=f"Change type of “{item.canonical}”")))
     kind, value = replacement_picker(res, item, f"ed-{ref}",
                                      item.custom or (item.label if not is_flag else "") or item.proposed)
     c1, c2, c3 = st.columns(3)
     if c1.button("Save", type="primary", width="stretch"):
         if apply_replacement(sess, res, ref, item, kind, value):
             st.rerun()
-    if c2.button("Keep original", width="stretch"):
-        sess.decide(ref, "keep")
+    if c2.button("Keep as written", width="stretch"):
+        sess.decide(ref, "keep", note=f"Keep “{(item.text if is_flag else item.canonical)[:40]}”")
         st.rerun()
-    if not is_flag and c3.button("🗑 Delete entity", width="stretch", help="Not an entity: leave the text as written."):
+    if not is_flag and c3.button("Don't hide this", width="stretch",
+                                 help="Not a real name? It will appear as written in every file."):
         delete_entity(sess, item)
         st.rerun()
-    if not is_flag:
-        with st.expander("Split a variant off into another entry"):
+    if not is_flag and len(forms) > 1:
+        with st.expander("Different people or things? Separate one"):
             split_controls(sess, res, item, f"ed-split-{ref}")
 
 
@@ -1128,17 +1293,26 @@ STATUS_TEXT = {"redacted": "redacted", "generalized": "still showing (generalize
                "visible": "still showing"}
 
 
+def show_hit(doc: int, k: int, entity_key: str = "") -> None:
+    """Jump to the k-th match in a document; if it belongs to a name, open that name in the sidebar."""
+    st.session_state.update(doc_pick=doc, search_focus=k, doc_layout="Side by side")
+    if entity_key:
+        st.session_state.focus = entity_key
+        st.session_state.pop("_ent_focus_seen", None)
+        st.session_state.ent_search = ""
+
+
 def search_panel(sess: Session, res) -> None:
     """Search every document for a word or phrase and see what happened to each occurrence."""
     q = st.text_input("Search the documents", key="doc_search", label_visibility="collapsed",
-                      placeholder="🔍 Search all documents for a word or phrase…")
+                      placeholder="🔍 Search every file for a word or phrase…")
     if not q.strip():
         return
     hits = search(res, q)
     labelled = [e for e in res.entities if q.strip().lower() in e.label.lower() and e.label not in ("Kept", "")]
     for e in labelled[:3]:
-        st.caption(f"“{e.label}” is the pseudonym for {e.canonical} — {len(e.mentions)}× in "
-                   f"{len({m[0] for m in e.mentions})} document(s).")
+        st.caption(f"“{e.label}” stands for {e.canonical} — {len(e.mentions)}× in "
+                   f"{len({m[0] for m in e.mentions})} file(s).")
     if not hits:
         if not labelled:
             st.caption(f"“{q.strip()}” doesn't appear in any original document.")
@@ -1150,7 +1324,7 @@ def search_panel(sess: Session, res) -> None:
                 f'<b>{len(hits) - len(showing)}</b> handled · <b class="{"warn" if showing else "ok"}">'
                 f'{len(showing)}</b> still showing</p>', unsafe_allow_html=True)
     per_doc_index: dict[int, int] = {}
-    with st.container(height=min(64 + 58 * len(hits), 300), border=True):
+    with st.container(height=min(64 + 58 * len(hits), 300), border=True, key="hits"):
         for i, h in enumerate(hits[:80]):
             k = per_doc_index.get(h["doc"], 0)
             per_doc_index[h["doc"]] = k + 1
@@ -1165,8 +1339,8 @@ def search_panel(sess: Session, res) -> None:
                 f'…{html.escape(before)} <mark class="hit">{html.escape(h["text"])}</mark> {html.escape(after)}…</div>',
                 unsafe_allow_html=True)
             c2.button("Show", key=f"hit_{i}", width="stretch",
-                      on_click=lambda d=h["doc"], k=k: st.session_state.update(doc_pick=d, search_focus=k,
-                                                                                doc_layout="Side by side"))
+                      on_click=show_hit, args=(h["doc"], k, h["ref"] if h["ref"] and not h["ref"].startswith("flag")
+                                               and h["status"] != "flagged" else ""))
     if showing and st.button(f"Redact every “{q.strip()}”", key="search_redact", type="primary"):
         redact_dialog(sess, res, {"text": q.strip()})
 
@@ -1187,46 +1361,48 @@ def documents(sess: Session, res) -> None:
         if todo:
             st.session_state.doc_pick = todo[0]
 
-    st.markdown(f'<p class="count-top"><b>{approved}/{n}</b> approved</p><p class="ll-label">Documents</p>',
+    st.markdown(f'<p class="count-top"><b>{approved}/{n}</b> approved</p><p class="ll-label">Read & approve</p>',
                 unsafe_allow_html=True)
-    d1, d2, d3, d4, d5 = st.columns([4.2, .55, .55, 1.6, 1.45], vertical_alignment="bottom")
+    d1, d2, d3, d4 = st.columns([4.4, .55, .55, 1.7], vertical_alignment="bottom")
     # A dropdown scales to large sets (type to search); ✓ marks approved documents.
     doc = d1.selectbox("Document", list(range(n)), key="doc_pick", label_visibility="collapsed",
                        format_func=lambda i: f"{'✓ ' if is_current(sess, res, i) else ''}{res.names[i]}")
-    d2.button("←", on_click=step, args=(-1,), help="Previous document", width="stretch", key="prev_doc")
-    d3.button("→", on_click=step, args=(1,), help="Next document", width="stretch", key="next_doc")
+    d2.button("←", on_click=step, args=(-1,), help="Previous file", width="stretch", key="prev_doc")
+    d3.button("→", on_click=step, args=(1,), help="Next file", width="stretch", key="next_doc")
     d4.button("Next to approve", on_click=next_unapproved, disabled=approved == n, width="stretch")
-    if d5.button("＋ Add documents", width="stretch", key="doc_add"):
-        add_documents_dialog(sess)
 
     search_panel(sess, res)
 
     edit = st.session_state.get("edit_mode", False)
     options = [(i, v) for i in range(n) for v in ("original", "anonymized")]
     fmt = lambda o: f"{o[1].capitalize()} · {short(res.names[o[0]], 22)}"
-    c1, c2, c3, c4 = st.columns([1.55, 1.75, 1.75, 1.45], vertical_alignment="bottom")
-    layout = c1.segmented_control("Layout", ["Side by side", "Single"], default="Side by side", key="doc_layout")
+    st.session_state.setdefault("doc_layout", "Side by side")
+    v1, v2 = st.columns([1.2, 4], vertical_alignment="center")
+    with v1.popover("View", width="stretch"):
+        layout = st.segmented_control("Layout", ["Side by side", "Single"], key="doc_layout")
+        if layout != "Single":
+            st.selectbox("Left", options, index=options.index((doc, "original")), format_func=fmt, key=f"left_{doc}")
+            st.selectbox("Right", options, index=options.index((doc, "anonymized")), format_func=fmt,
+                         key=f"right_{doc}")
+            st.toggle("Scroll together", value=True, key="sync_scroll", help="Keeps both panes on the same passage.")
+    layout = st.session_state.get("doc_layout") or "Side by side"
     if layout == "Single":
         panes, sync = [(doc, "anonymized")], False
     else:
-        left = c2.selectbox("Left", options, index=options.index((doc, "original")), format_func=fmt, key=f"left_{doc}")
-        right = c3.selectbox("Right", options, index=options.index((doc, "anonymized")), format_func=fmt,
-                             key=f"right_{doc}")
-        sync = c4.toggle("Scroll together", value=True, key="sync_scroll",
-                         help="Keeps both panes on the same passage.")
-        panes = [left, right]
+        panes = [st.session_state.get(f"left_{doc}", (doc, "original")),
+                 st.session_state.get(f"right_{doc}", (doc, "anonymized"))]
+        sync = st.session_state.get("sync_scroll", True)
+    v2.markdown('<div class="legend"><span><span class="chip">Label</span> hidden</span>'
+                '<span><span class="chip pending">Label</span> needs a look</span>'
+                '<span><span class="flag">phrase</span> flagged</span>'
+                '<span>Hover any highlight to see the original</span></div>', unsafe_allow_html=True)
 
-    present = sorted({g.type for g in res.segments[doc]})
-    st.markdown('<div class="legend">' + "".join(
-        f'<span><span class="chip t-{color_type(t)}">&nbsp;</span> {type_name(t)}</span>' for t in present)
-        + '<span>Hover to compare · dashed = unreviewed</span></div>',
-        unsafe_allow_html=True)
     for w in (sess.warnings[doc] if getattr(sess, 'warnings', None) and doc < len(sess.warnings) else []):
         (st.error if w["level"] == "block" else st.caption)(("Blocks release — " if w["level"] == "block" else "Note: ")
                                                             + w["message"])
     if edit:
-        st.markdown('<p class="edit-hint">Editing: select any text to redact it, or click ✎ next to a placeholder '
-                    'to change or remove it.</p>', unsafe_allow_html=True)
+        st.markdown('<p class="edit-hint">Editing: select any text to hide it, or click ✎ next to a label to '
+                    'change it.</p>', unsafe_allow_html=True)
 
     def head(d, v):
         btn = (f'<button class="pane-edit{" on" if edit else ""}" data-act="toggle-edit">'
@@ -1256,10 +1432,12 @@ def documents(sess: Session, res) -> None:
             edit_dialog(sess, res, action["ref"])
 
 
-    # Approval: a clear button at the bottom moves the document to the final stage.
+    # Approval: one clear primary action; downloads live on ④ Download.
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     stale = doc in sess.approved and not is_current(sess, res, doc)
-    a1, a2, a3 = st.columns(3, vertical_alignment="center")
+    open_here = [k for k in res.queue if res.item(k).status == "pending"
+                 and any(m[0] == doc for m in res.item(k).mentions)]
+    a1, a2, _ = st.columns([1.7, 1.3, 1.5], vertical_alignment="center")
     if is_current(sess, res, doc):
         a1.button("✓ Approved · undo", width="stretch", key=f"unapprove_{doc}",
                   on_click=lambda: sess.unapprove(doc))
@@ -1271,82 +1449,76 @@ def documents(sess: Session, res) -> None:
                 st.session_state.doc_pick = todo[0]
                 st.session_state.focus_note = f"Approved {res.names[doc]} — next: {res.names[todo[0]]}"
             else:
-                st.session_state.focus_note = "Every document is approved — the final package is ready"
+                st.session_state.focus_note = "Every file is approved — go to ④ Download"
 
-        a1.button("✓ Approve new version" if stale else "✓ Approve document", type="primary", width="stretch",
-                  key=f"approve_{doc}", on_click=approve_and_advance)
-    blocked = bool(sess.release_blockers(res))
-    a2.download_button("Download this document", res.outputs[doc], f"{Path(res.names[doc]).stem}.anonymized.txt",
-                       "text/plain", width="stretch", disabled=blocked)
-    a3.download_button("Download all (.zip)", buyer_zip(res.names, res.outputs), "anonymized_documents.zip",
-                       "application/zip", type="primary", width="stretch", disabled=blocked)
-    release_box(sess, res)
+        a1.button("✓ Approve again" if stale else ("✓ Approve and open next" if approved < n - 1 else "✓ Approve"),
+                  type="primary", width="stretch", key=f"approve_{doc}", on_click=approve_and_advance)
+    if open_here:
+        a2.markdown(f'<span class="dim">{len(open_here)} item{"s" if len(open_here) != 1 else ""} in this file '
+                    'still need a look</span>', unsafe_allow_html=True)
     if approved == n:
-        st.success("Every document is approved.")
-        st.button("Go to the final package →", type="primary", key="to_final",
+        st.success("Every file is approved.")
+        st.button("Go to ④ Download →", type="primary", key="to_final",
                   on_click=lambda: st.session_state.update(view="Final"))
     if stale:
-        st.warning("Changed since approval. Approve again to update the package.")
+        st.warning("Changed since you approved it. Approve again to update the package.")
+    release_box(sess, res)
 
-    with st.expander("Every change in this document"):
+    with st.expander("Every change in this file"):
         seen = {}
         for g in res.segments[doc]:
-            seen.setdefault((g.original, g.replacement), type_name(g.type))
-        st.dataframe(pd.DataFrame([{"original": o, "replacement": r, "type": t} for (o, r), t in seen.items()]),
+            if g.kind != "tidy":
+                seen.setdefault((g.original, g.replacement), type_name(g.type))
+        st.dataframe(pd.DataFrame([{"original": o, "shown as": r, "type": t} for (o, r), t in seen.items()]),
                      hide_index=True, width="stretch")
 
 
 def final_view(sess: Session, res) -> None:
-    """Step 4: everything compiled — progress, release check, the approved package, and the audit trail."""
+    """Step 4: one checklist, one package, and the internal key kept apart."""
     n = len(res.names)
     items = sorted(sess.approved.items())
     cc = consistency_check(res)
-    reviewed = len(res.queue) - len(cc["unreviewed"])
     current = sum(is_current(sess, res, i) for i in range(n))
-    st.markdown('<h2>Final package</h2>', unsafe_allow_html=True)
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Documents approved", f"{current}/{n}")
-    m2.metric("Review items done", f"{reviewed}/{len(res.queue)}")
-    m3.metric("Entities", len(res.entities))
-    m4.metric("Leaks found", 0 if cc["leak_free"] else sum(bool(r["leaks"]) for r in cc["rows"]))
+    checks = [
+        (sess.rights_confirmed, "Rights confirmed"),
+        (not cc["unreviewed"], "All items checked" if not cc["unreviewed"]
+         else f"{len(cc['unreviewed'])} item(s) still need a look"),
+        (cc["leak_free"], "No original names left" if cc["leak_free"] else "Some original text is still showing"),
+        (current == n, f"{current} of {n} files approved"),
+    ]
+    ready = all(ok for ok, _ in checks)
+    st.markdown(f'<h2>{"Ready to share" if ready else "Almost ready"}</h2><div class="check">' + "<br>".join(
+        f'<span class="{"ok" if ok else "warn"}">{"✓" if ok else "○"}</span>&nbsp; {html.escape(t)}' for ok, t in checks)
+        + "</div>", unsafe_allow_html=True)
     todo = [i for i in range(n) if not is_current(sess, res, i)]
     if todo:
-        st.markdown(f'<p class="ll-note">To approve: {html.escape(", ".join(res.names[i] for i in todo))}</p>',
-                    unsafe_allow_html=True)
-        st.button("Approve the rest in Documents →", key="final_to_docs",
+        st.button("Approve the rest →", key="final_to_docs",
                   on_click=lambda: st.session_state.update(view="Documents", doc_pick=todo[0]))
     blocked = bool(release_box(sess, res))   # always visible, so leaks surface before anything is approved
-    if not items:
-        st.info("Nothing approved yet.")
-        st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
-        audit_trail(sess, res)
-        return
-    names = [res.names[d] for d, _ in items]
-    outputs = [a["output"] for _, a in items]
-    combined = "\n\n".join(f"{'=' * 72}\n{name}\n{'=' * 72}\n\n{out}" for name, out in zip(names, outputs))
-    c1, c2, _ = st.columns([1.6, 1.6, 1.2])
-    c1.download_button(f"Download package (.zip, {len(items)})", buyer_zip(names, outputs), "anonymized_package.zip",
-                       "application/zip", type="primary", disabled=blocked, width="stretch")
-    c2.download_button("Download as one combined file", combined, "anonymized_package.txt", "text/plain",
-                       disabled=blocked, width="stretch")
-    st.caption("Documents only — the mapping key stays internal.")
-    with st.expander("Preview the compiled package"):
-        st.markdown(f'<div class="doc" style="max-height:460px;overflow:auto">{html.escape(combined)}</div>',
-                    unsafe_allow_html=True)
-    label("Approved documents")
-    rows = [{"document": res.names[d], "approved": a["at"], "redactions": a["changes"],
-             "status": "current" if a["output"] == res.outputs[d] else "changed since approval"} for d, a in items]
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    for d, a in items:
-        with st.expander(f"✓ {res.names[d]} — approved {a['at']}"):
-            c1, c2, _ = st.columns([1.4, 1, 2])
-            c1.download_button("Download", a["output"], f"{Path(res.names[d]).stem}.anonymized.txt", "text/plain",
-                               key=f"dl_appr_{d}", width="stretch", disabled=bool(blocked))
-            if c2.button("Move back", key=f"unappr_{d}", width="stretch"):
-                sess.unapprove(d)
-                st.rerun()
-            st.markdown(f'<div class="doc" style="max-height:340px;overflow:auto">{html.escape(a["output"])}</div>',
+    if items:
+        names = [res.names[d] for d, _ in items]
+        outputs = [a["output"] for _, a in items]
+        combined = "\n\n".join(f"{'=' * 72}\n{name}\n{'=' * 72}\n\n{out}" for name, out in zip(names, outputs))
+        c1, c2, _ = st.columns([1.6, 1.6, 1.2])
+        c1.download_button(f"Download approved files (.zip, {len(items)})", buyer_zip(names, outputs),
+                           "anonymized_package.zip", "application/zip", type="primary", disabled=blocked,
+                           width="stretch")
+        c2.download_button("As one combined file", combined, "anonymized_package.txt", "text/plain",
+                           disabled=blocked, width="stretch")
+        st.caption("Only approved files are included. The label key is never in the download.")
+        with st.expander(f"Approved files ({len(items)}) and preview"):
+            for d, a in items:
+                c1, c2 = st.columns([4, 1], vertical_alignment="center")
+                c1.markdown(f'✓ {html.escape(res.names[d])} <span class="dim">· approved {a["at"]}'
+                            f'{" · changed since" if a["output"] != res.outputs[d] else ""}</span>',
+                            unsafe_allow_html=True)
+                if c2.button("Move back", key=f"unappr_{d}", width="stretch"):
+                    sess.unapprove(d)
+                    st.rerun()
+            st.markdown(f'<div class="doc" style="max-height:420px;overflow:auto">{html.escape(combined)}</div>',
                         unsafe_allow_html=True)
+    else:
+        st.info("Nothing approved yet.")
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     audit_trail(sess, res)
 
@@ -1354,34 +1526,15 @@ def final_view(sess: Session, res) -> None:
 # --------------------------------------------------------------------------- log & consistency
 def audit_trail(sess: Session, res) -> None:
     cc = consistency_check(res)
-    label("Consistency check")
-    n = len(cc["rows"])
-    lines = [
-        (cc["all_consistent"], f"{n} entities · each has one replacement across every document"
-         if cc["all_consistent"] else "Some entities have differing replacements — see table"),
-        (cc["leak_free"], "No original text found in the anonymized output" if cc["leak_free"]
-         else "Original text still present — see “Where the original text is still showing” above"),
-        (not cc["unreviewed"], "Review queue complete" if not cc["unreviewed"]
-         else f"{len(cc['unreviewed'])} item(s) still unreviewed (proposed replacements applied)"),
-    ]
-    st.markdown('<div class="check">' + "<br>".join(
-        f'<span class="{"ok" if ok else "warn"}">{"✓" if ok else "!"}</span>&nbsp; {html.escape(t)}' for ok, t in lines)
-        + "</div>", unsafe_allow_html=True)
-    if cc["unreviewed"]:
-        with st.expander(f"Show the {len(cc['unreviewed'])} unreviewed item(s)"):
-            st.markdown("".join(
-                f'<div class="form-row"><span class="form">'
-                f'{html.escape(res.item(k).text if k.startswith("F|") else res.item(k).canonical)}</span>'
-                f' → {html.escape(res.item(k).proposed)}</div>' for k in cc["unreviewed"]), unsafe_allow_html=True)
-    st.dataframe(pd.DataFrame(cc["rows"]), hide_index=True, width="stretch")
-
-    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
-    label("Redaction log · internal")
-    st.markdown('<p class="ll-note">Original → replacement. Keep it internal: with it, the output is only '
-                '<b>pseudonymized</b>. Never shipped in the ZIP.</p>', unsafe_allow_html=True)
-    st.dataframe(pd.DataFrame(redaction_log(res)), hide_index=True, width="stretch")
-    st.download_button("Download internal mapping key (.csv)", internal_log_csv(res), "INTERNAL_redaction_key.csv",
-                       "text/csv")
+    with st.expander("Details: every name and its label"):
+        st.caption("Each name should have one label in every file, and none should still be showing.")
+        rows = [{"Label": r["registry_id"], "Type": type_name(r["entity_type"]), "Original": r["original"],
+                 "Shown as": r["replacement"], "Files": r["documents"], "Same everywhere": r["consistent"],
+                 "Still showing": r["leaks"]} for r in cc["rows"]]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    st.markdown('<div class="keybox"><b>Label key — do not send.</b> It turns labels back into real names. Keep it '
+                'inside your team; it is never part of the download.</div>', unsafe_allow_html=True)
+    st.download_button("Download the label key (.csv)", internal_log_csv(res), "INTERNAL_label_key.csv", "text/csv")
 
 
 # --------------------------------------------------------------------------- main
@@ -1406,11 +1559,19 @@ else:
     open_items = sum(res.item(k).status == "pending" for k in res.queue)
     if st.session_state.get("view") not in VIEWS:
         st.session_state.view = "Review"
-    labels = {"Start": "① Start",
-              "Review": "② Review" + (f" · {open_items} open" if open_items else " ✓"),
-              "Documents": f"③ Documents · {n_ok}/{len(res.names)}",
-              "Final": "④ Final" + (" ✓" if n_ok == len(res.names) else "")}
-    view = st.segmented_control("Step", VIEWS, key="view", format_func=labels.get,
-                                label_visibility="collapsed") or "Review"
+    labels = {"Start": "① Files",
+              "Review": "② Check" + (f" · {open_items} open" if open_items else " ✓"),
+              "Documents": f"③ Read & approve · {n_ok}/{len(res.names)}",
+              "Final": "④ Download" + (" ✓" if n_ok == len(res.names) else "")}
+    with st.container(key="stepbar"):
+        s1, s2 = st.columns([5, 1.1], vertical_alignment="center")
+        with s1:
+            view = st.segmented_control("Step", VIEWS, key="view", format_func=labels.get,
+                                        label_visibility="collapsed") or "Review"
+        s2.button("↶ Undo", key="undo_top", on_click=undo, disabled=not sess.can_undo, width="stretch",
+                  help=f"Undo: {sess.last_change}" if sess.can_undo else "Nothing to undo yet")
+    # Ask before leaving: nothing is saved, so a refresh would wipe the work.
+    st.html("<script>window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue = ''; };</script>",
+            unsafe_allow_javascript=True)
     st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
     {"Start": start_view, "Review": review, "Documents": documents, "Final": final_view}[view](sess, res)

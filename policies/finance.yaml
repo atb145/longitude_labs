@@ -53,14 +53,14 @@ entities:
     action: redact
     label: "CRD {1}"
     rule: always_redact.crd_numbers
-    reason: Searchable in BrokerCheck.
+    reason: Anyone can look this up in FINRA's BrokerCheck.
     auto: true
   CUSIP:
     title: CUSIPs
     action: redact
     label: "CUSIP {1}"
     rule: always_redact.security_identifiers
-    reason: Pins down the security traded.
+    reason: Reveals which stock was traded.
     auto: true
   SHARE_PRICE:
     title: Stock and share prices
@@ -81,7 +81,7 @@ entities:
     action: redact
     label: "Ticker {A}"
     rule: always_redact.security_identifiers
-    reason: Pins down the security traded.
+    reason: Reveals which stock was traded.
     auto: true
   CASE_NUMBER:
     title: Case / docket numbers
@@ -95,14 +95,14 @@ entities:
     action: redact
     label: "Email {1}"
     rule: always_redact.emails
-    reason: Always redacted.
+    reason: Points straight to a person.
     auto: true
   PHONE_NUMBER:
     title: Phone numbers
     action: redact
     label: "Phone {1}"
     rule: always_redact.phones
-    reason: Always redacted.
+    reason: Points straight to a person.
     auto: true
   TAX_ID:
     title: Tax / employer IDs (EIN)
@@ -116,7 +116,7 @@ entities:
     action: redact
     label: "SSN {1}"
     rule: always_redact.ssns
-    reason: Always redacted.
+    reason: Points straight to a person.
     auto: true
   POSTAL_CODE:
     title: ZIP codes
@@ -298,22 +298,27 @@ recognizers:
 
 flag_for_review:
   - id: flag.family_relationship
+    title: Relative mentioned
     pattern: '(?i)\b(?P<v>(?:his|her|their|the)\s+(?:brother|sister|father|mother|son|daughter|cousin|uncle|aunt|nephew|niece|husband|wife|spouse|partner|fianc[eé]e?)(?:-in-law)?)\b'
     replacement: a relative
     reason: A relative can re-identify someone.
   - id: flag.family_relationship
+    title: Relative mentioned
     pattern: '(?i)\bthe\s+(?P<v>(?:brother|sister|father|mother|son|daughter|cousin)-in-law)\s+of\b'
     replacement: a relative
     reason: A relative can re-identify someone.
   - id: flag.family_relationship
+    title: Relative mentioned
     pattern: '(?i)(?<=[\x27’]s\s)(?P<v>(?:brother|sister|father|mother|son|daughter|husband|wife|spouse)(?:-in-law)?)\b'
     replacement: relative
     reason: A relative can re-identify someone.
   - id: flag.role_at_named_entity
+    title: Job title that points to one person
     pattern: '(?i)\b(?P<v>the\s+(?:company|firm|fund|adviser|bank)[\x27’]s\s+(?:CEO|CFO|COO|CCO|CIO|general counsel|chief [a-z]+ officer|founder|chairman|treasurer))\b'
     replacement: a senior executive
     reason: A unique title points to one person.
   - id: flag.role_at_named_entity
+    title: Job title that points to one person
     pattern: '(?i)\b(?P<v>(?:the\s+)?(?:former\s+)?(?:chief (?:executive|financial|operating|compliance|investment) officer|managing partner|general counsel))\b'
     replacement: a senior executive
     reason: A unique title points to one person.

@@ -17,6 +17,7 @@ class FlagRule:
     replacement: str
     reason: str
     scope: str = "match"          # "match" flags the matched words; "sentence" flags the whole sentence
+    title: str = ""               # plain-language name shown on review cards and in Rules
 
 
 @dataclass
@@ -60,15 +61,16 @@ class Policy:
         for f in self.flags:
             if f.id not in seen and f.id not in edge_ids:
                 seen.add(f.id)
-                out.append(("Flag for review", f.id, f.id.split(".", 1)[-1].replace("_", " ").capitalize(), f.reason))
+                out.append(("Flag for review", f.id, f.title or f.id.split(".", 1)[-1].replace("_", " ").capitalize(),
+                            f.reason))
         if self.quasi.get("categories"):
-            out.append(("Flag for review", "quasi.combination", "Identifying combinations (age, role, place, date…)",
-                        "A sentence combining several attributes can single someone out with no name in it."))
+            out.append(("Flag for review", "quasi.combination", "Details that together identify someone",
+                        "Age, job, place and date in one sentence can point to one person, even with no name."))
         for r in self.edge_rules:
             out.append(("Edge cases", r["id"], r.get("description") or r["id"], r.get("reason", "")))
         if self.keep_terms or self.keep_patterns:
-            out.append(("Keep list", "keep_list", "Never redact public bodies (SEC, FINRA, courts…)",
-                        "Off: keep-list terms are treated like any other text."))
+            out.append(("Keep list", "keep_list", "Keep public bodies readable (SEC, FINRA, courts…)",
+                        "Off: these names are hidden like any other."))
         return out
 
     @property
@@ -147,7 +149,7 @@ def parse_policy(raw: dict, fallback_name: str) -> Policy:
     recognizers = [dict(r) for r in raw.get("recognizers", [])]
     flags = [
         FlagRule(f["id"], re.compile(f["pattern"]), f.get("replacement", "[redacted]"), f["reason"],
-                 f.get("scope", "match"))
+                 f.get("scope", "match"), f.get("title", ""))
         for f in raw.get("flag_for_review", [])
     ]
     keep = raw.get("keep_list", {})
