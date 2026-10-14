@@ -10,12 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .detect import Detection, build_analyzer, detect
-from .extract import extract_text
+from .extract import extract_document, extract_text
 from .policy import Policy, available_policies, load_policy, load_policy_text
-from .registry import Result, build, consistency_check, redaction_log
+from .registry import Result, build, consistency_check, redaction_log, release_check
 
 __all__ = ["Session", "Policy", "Result", "available_policies", "load_policy", "load_policy_text", "extract_text",
-           "build", "redaction_log", "consistency_check", "Detection"]
+           "build", "redaction_log", "consistency_check", "release_check", "Detection"]
 
 _ANALYZERS: dict[str, object] = {}
 
@@ -35,7 +35,10 @@ class Session:
     policy: Policy
     detections: list[Detection]
     settings: dict
-    ops: dict = field(default_factory=lambda: {"decisions": {}, "history": [], "merges": [], "splits": [], "manual": []})
+    ops: dict = field(default_factory=lambda: {"decisions": {}, "history": [], "merges": [], "splits": [], "manual": [],
+                                               "deleted": []})
+    warnings: list = field(default_factory=list)  # per document: extraction warnings ({"level", "message"})
+    rights_confirmed: bool = False
     approved: dict = field(default_factory=dict)  # doc index -> {"output", "at", "changes"} snapshot
 
     @classmethod
@@ -47,7 +50,10 @@ class Session:
 
     @classmethod
     def from_files(cls, files: list[tuple[str, bytes]], policy: str | Policy = "Finance") -> "Session":
-        return cls.from_texts([(n, extract_text(n, b)) for n, b in files], policy)
+        docs = [(n, extract_document(n, b)) for n, b in files]
+        sess = cls.from_texts([(n, d.text) for n, d in docs], policy)
+        sess.warnings = [d.warnings for _, d in docs]
+        return sess
 
     def with_policy(self, policy: Policy) -> "Session":
         """Same documents and review decisions, re-detected under another policy pack."""
@@ -55,6 +61,8 @@ class Session:
                       dict(policy.settings))
         new.ops = self.ops
         new.approved = self.approved
+        new.warnings = self.warnings
+        new.rights_confirmed = self.rights_confirmed
         return new
 
     def run(self) -> Result:
@@ -86,6 +94,14 @@ class Session:
         self.ops["manual"] = [m for m in self.ops.get("manual", [])
                               if f"{m.get('type') or 'MANUAL'}:manual:{' '.join(m['text'].split()).lower()}" != entity_key]
         self.ops["decisions"].pop("E|" + entity_key, None)
+
+    def delete(self, entity_key: str) -> None:
+        """Remove a false detection from the registry (e.g. a heading read as a company); its text stays."""
+        self.ops.setdefault("deleted", []).append(entity_key)
+        self.ops["decisions"].pop("E|" + entity_key, None)
+
+    def release_blockers(self, result: Result) -> list[str]:
+        return release_check(result, self.warnings or [[] for _ in self.names], self.rights_confirmed)
 
     def approve(self, doc: int, result: Result) -> None:
         from datetime import datetime

@@ -16,6 +16,7 @@ class FlagRule:
     regex: re.Pattern
     replacement: str
     reason: str
+    scope: str = "match"          # "match" flags the matched words; "sentence" flags the whole sentence
 
 
 @dataclass
@@ -34,6 +35,8 @@ class Policy:
     recognizers: list[dict]
     flags: list[FlagRule] = field(default_factory=list)
     edge_rules: list[dict] = field(default_factory=list)
+    nicknames: dict[str, list[str]] = field(default_factory=dict)
+    quasi: dict = field(default_factory=dict)          # {"min_categories": int, "categories": {name: [regex]}}
 
     def spec(self, entity_type: str) -> dict:
         return self.entities.get(entity_type, {"action": "ignore"})
@@ -53,6 +56,9 @@ class Policy:
             if f.id not in seen and f.id not in edge_ids:
                 seen.add(f.id)
                 out.append(("Flag for review", f.id, f.id.split(".", 1)[-1].replace("_", " ").capitalize(), f.reason))
+        if self.quasi.get("categories"):
+            out.append(("Flag for review", "quasi.combination", "Identifying combinations (age, role, place, date…)",
+                        "A sentence combining several attributes can single someone out with no name in it."))
         for r in self.edge_rules:
             out.append(("Edge cases", r["id"], r.get("description") or r["id"], r.get("reason", "")))
         if self.keep_terms or self.keep_patterns:
@@ -67,7 +73,7 @@ class Policy:
 
 def available_policies() -> dict[str, Path]:
     out = {}
-    for path in sorted(POLICY_DIR.glob("*.yaml")):
+    for path in sorted(p for p in POLICY_DIR.glob("*.yaml") if not p.name.startswith("_")):
         with open(path) as fh:
             out[yaml.safe_load(fh).get("name", path.stem)] = path
     return out
@@ -94,10 +100,31 @@ def load_policy_text(text: str, fallback_name: str = "Custom") -> Policy:
         raise ValueError(f"Policy file is missing a required field: {exc}") from exc
 
 
+def _merge_base(raw: dict) -> dict:
+    """General rules in policies/_base.yaml apply to every pack; the pack's own values win on conflicts."""
+    base_path = POLICY_DIR / "_base.yaml"
+    if raw.get("name") == "_base" or not base_path.exists():
+        return raw
+    with open(base_path) as fh:
+        base = yaml.safe_load(fh) or {}
+    out = dict(raw)
+    out["settings"] = {**base.get("settings", {}), **raw.get("settings", {})}
+    out["entities"] = {**base.get("entities", {}), **raw.get("entities", {})}
+    for key in ("recognizers", "flag_for_review", "not_entities", "name_noise_words", "public_companies"):
+        out[key] = list(base.get(key) or []) + list(raw.get(key) or [])
+    keep_b, keep_r = base.get("keep_list") or {}, raw.get("keep_list") or {}
+    out["keep_list"] = {k: list(keep_b.get(k) or []) + list(keep_r.get(k) or []) for k in ("terms", "patterns")}
+    out["nicknames"] = {**(base.get("nicknames") or {}), **(raw.get("nicknames") or {})}
+    out["quasi_identifiers"] = raw.get("quasi_identifiers") or base.get("quasi_identifiers") or {}
+    return out
+
+
 def parse_policy(raw: dict, fallback_name: str) -> Policy:
+    raw = _merge_base(raw)
     recognizers = [dict(r) for r in raw.get("recognizers", [])]
     flags = [
-        FlagRule(f["id"], re.compile(f["pattern"]), f.get("replacement", "[redacted]"), f["reason"])
+        FlagRule(f["id"], re.compile(f["pattern"]), f.get("replacement", "[redacted]"), f["reason"],
+                 f.get("scope", "match"))
         for f in raw.get("flag_for_review", [])
     ]
     keep = raw.get("keep_list", {})
@@ -116,7 +143,8 @@ def parse_policy(raw: dict, fallback_name: str) -> Policy:
                                         "rule": rule["id"], "reason": rule.get("reason", ""), "auto": True})
         elif action == "flag":
             flags.append(FlagRule(rule["id"], re.compile(rule["pattern"]),
-                                  rule.get("replacement", "[redacted]"), rule.get("reason", "")))
+                                  rule.get("replacement", "[redacted]"), rule.get("reason", ""),
+                                  rule.get("scope", "match")))
         elif action == "keep":
             keep_patterns.append(re.compile(rule["pattern"]))
 
@@ -136,4 +164,8 @@ def parse_policy(raw: dict, fallback_name: str) -> Policy:
         recognizers=recognizers,
         flags=flags,
         edge_rules=[dict(r) for r in raw.get("edge_cases") or []],
+        nicknames={k.lower(): [v.lower() for v in vs] for k, vs in (raw.get("nicknames") or {}).items()},
+        quasi={"min_categories": int((raw.get("quasi_identifiers") or {}).get("min_categories", 3)),
+               "categories": {k: [re.compile(p) for p in v]
+                              for k, v in ((raw.get("quasi_identifiers") or {}).get("categories") or {}).items()}},
     )
