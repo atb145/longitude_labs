@@ -16,26 +16,28 @@ def test_sample_flow_all_views():
         at.session_state.view = view
         at.run()
         assert not at.exception, (view, at.exception)
-    # Downloads stay locked while items are unreviewed
-    at.session_state.view = "Documents"
-    at.run()
-    zips = [d for d in at.get("download_button") if "Download all" in d.proto.label]
-    assert zips and zips[0].proto.disabled
-    # …and unlock once everything is reviewed
-    for k in sess.run().queue:
-        sess.decide(k, "accept")
-    at.run()
-    zips = [d for d in at.get("download_button") if "Download all" in d.proto.label]
-    assert not zips[0].proto.disabled
-    # Approve everything -> the final package is downloadable as a ZIP and as one combined file
+    # Approve everything while items are still open: the package download stays locked…
     at.session_state.view = "Final"
     at.run()
     for i in range(len(sess.names)):
         sess.approve(i, sess.run())
     at.run()
+    zips = [d for d in at.get("download_button") if "Download approved files" in d.proto.label]
+    assert zips and zips[0].proto.disabled
+    # …and unlocks once everything is checked (approvals are refreshed for the final wording)
+    for k in sess.run().queue:
+        sess.decide(k, "accept")
+    for i in range(len(sess.names)):
+        sess.approve(i, sess.run())
+    at.run()
     assert not at.exception, at.exception
     labels = [d.proto.label for d in at.get("download_button") if not d.proto.disabled]
-    assert any("Download package" in l for l in labels) and any("combined" in l for l in labels)
+    assert any("Download approved files" in l for l in labels) and any("combined" in l for l in labels)
+    assert any("Ready to share" in m.value for m in at.markdown)
+    # ↶ Undo reverses the last change
+    before = len(sess.undo_stack)
+    next(b for b in at.button if b.label == "↶ Undo").click().run()
+    assert not at.exception and len(at.session_state.session.undo_stack) == before - 1
 
 
 def test_add_documents_keeps_pseudonyms():

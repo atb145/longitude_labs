@@ -22,14 +22,14 @@ entities:
     action: generalize
     label: "Amount {1}"
     rule: generalize.figures
-    reason: Exact amounts are searchable; rounded, never noised.
+    reason: Exact amounts can be looked up, so they're rounded.
     auto: true
   SHARE_COUNT:
     title: Share counts → rounded
     action: generalize
     label: "Shares {1}"
     rule: generalize.figures
-    reason: Exact counts are searchable; rounded, never noised.
+    reason: Exact counts can be looked up, so they're rounded.
     auto: true
 
 recognizers:
@@ -185,12 +185,14 @@ nicknames:
 flag_for_review:
   # Quasi-identifiers (optional alternative): a whole group implicated without names.
   - id: flag.group_inference
+    title: Whole team implicated
     scope: sentence
     pattern: '(?i)\b(?:all|both|each of the|every one of the|the entire)\s+(?:\w+\s+){0,2}(?:analysts|traders|employees|members|partners|directors|staff|nurses|physicians|associates)\s+(?:on|of|at|in)\s+the\s+(?:\w+\s+){0,3}(?:desk|team|office|group|branch|unit|ward|department)\b'
     replacement: Several employees in one team were affected.
-    reason: Implicates every member of a small group.
+    reason: Points at everyone on a small team.
   # Release & rights 4.2: anonymizing does not cure privilege or client confidentiality.
   - id: rights.privileged
+    title: Possibly privileged
     scope: sentence
     pattern: '(?i)\b(?:attorney[- ]client|privileged(?: (?:and|&) confidential)?|work product|we (?:recommend|advise) (?:that the client )?settl\w*|(?:the |our )?client[’'']s exposure|under (?:the |a )?NDA|subject to (?:a |the )?non-disclosure|protected health information|patient (?:record|chart)s?)\b'
     replacement: "[Withheld: possibly privileged or client-confidential]"

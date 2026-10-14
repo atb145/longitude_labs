@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import copy
+import json
 from dataclasses import dataclass, field, replace
 
 from .detect import Detection, build_analyzer, detect
@@ -55,6 +57,34 @@ class Session:
     warnings: list = field(default_factory=list)  # per document: extraction warnings ({"level", "message"})
     rights_confirmed: bool = False
     approved: dict = field(default_factory=dict)  # doc index -> {"output", "at", "changes"} snapshot
+    undo_stack: list = field(default_factory=list)  # [(what changed, ops before the change)] — one history
+
+    # ---- undo: every change to the registry goes through _checkpoint, so ↶ Undo reverses the last one
+    def _checkpoint(self, what: str) -> None:
+        self.undo_stack.append((what, copy.deepcopy(self.ops)))
+        del self.undo_stack[:-100]
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self.undo_stack)
+
+    @property
+    def last_change(self) -> str:
+        return self.undo_stack[-1][0] if self.undo_stack else ""
+
+    def undo(self) -> str | None:
+        """Reverse the last change (any kind). Returns what was undone, or None."""
+        if not self.undo_stack:
+            return None
+        what, ops = self.undo_stack.pop()
+        self.ops = ops
+        return what
+
+    def retype(self, entity_key: str, new_type: str, note: str = "") -> None:
+        """'This is a person, not a company': change an entity's type; its label is recomputed."""
+        self._checkpoint(note or "Change type")
+        self.ops.setdefault("retype", {})[entity_key] = new_type
+        self.ops.get("labels", {}).pop(entity_key, None)
 
     @classmethod
     def from_texts(cls, docs: list[tuple[str, str]], policy: str | Policy = "Finance") -> "Session":
@@ -107,38 +137,54 @@ class Session:
         return new
 
     def run(self) -> Result:
-        return build(self.names, self.texts, self.detections, self.policy, self.settings, self.ops)
+        """Build the result. Memoized on (documents, settings, ops): the UI asks for it many times per click."""
+        key = json.dumps({"o": self.ops, "s": self.settings, "n": len(self.texts), "p": id(self.policy),
+                          "d": len(self.detections)}, sort_keys=True, default=str)
+        memo = self.__dict__.get("_memo")
+        if memo and memo[0] == key:
+            return memo[1]
+        res = build(self.names, self.texts, self.detections, self.policy, self.settings, self.ops)
+        self.__dict__["_memo"] = (key, res)
+        return res
 
-    def decide(self, item_key: str, action: str, value: str = "") -> None:
+    def decide(self, item_key: str, action: str, value: str = "", note: str = "") -> None:
+        self._checkpoint(note or {"accept": "Accept", "keep": "Keep as written", "edit": "Change"}.get(action, action))
         self.ops["decisions"][item_key] = {"action": action, "value": value}
         self.ops["history"].append(item_key)
 
-    def undo(self) -> str | None:
-        if not self.ops["history"]:
-            return None
-        key = self.ops["history"].pop()
-        self.ops["decisions"].pop(key, None)
-        return key
-
-    def redact(self, text: str, entity_type: str = "MANUAL", replacement: str = "", label: str = "") -> None:
+    def redact(self, text: str, entity_type: str = "MANUAL", replacement: str = "", label: str = "",
+               note: str = "") -> None:
         """Redact a phrase by hand. Applies to every occurrence in every document. ``label`` is a
         template like "Project codename {1}" for reviewer-defined types."""
+        self._checkpoint(note or f"Redact “{' '.join(text.split())[:40]}”")
         self.ops.setdefault("manual", []).append(
             {"text": text, "type": entity_type, "replacement": replacement, "label": label})
 
-    def rename(self, entity_key: str, label: str) -> None:
+    def rename(self, entity_key: str, label: str, note: str = "") -> None:
         """Give an entity a label of your choice ("Defendant", "Receiving company"); it becomes its pseudonym in
         every document. Raises ValueError if another entity already uses that label."""
         label = " ".join(label.split())
         taken = {e.label.lower(): e for e in self.run().entities if e.key != entity_key}
         if label.lower() in taken:
-            raise ValueError(f"“{label}” is already the label of {taken[label.lower()].canonical}. Pick that "
-                             "entity from the dropdown to merge them, or choose another label.")
+            raise ValueError(f"“{label}” is already the label of {taken[label.lower()].canonical}. Pick it from "
+                             "the dropdown to treat them as the same, or choose another label.")
+        self._checkpoint(note or f"Rename to “{label}”")
         self.ops.setdefault("labels", {})[entity_key] = label
 
-    def set_parties(self, parties: list[dict]) -> None:
+    def set_parties(self, parties: list[dict], note: str = "") -> None:
         """Known parties ({"name", "type"}): always redacted with every variant (context tool)."""
+        self._checkpoint(note or "Change known parties")
         self.ops["parties"] = [p for p in parties if str(p.get("name", "")).strip()]
+
+    def add_party(self, name: str, entity_type: str = "ORGANIZATION") -> None:
+        name = " ".join(name.split())
+        if name and name.lower() not in {p["name"].lower() for p in self.ops.get("parties", [])}:
+            self.set_parties(list(self.ops.get("parties", [])) + [{"name": name, "type": entity_type}],
+                             note=f"Add known party “{name}”")
+
+    def remove_party(self, name: str) -> None:
+        self.set_parties([p for p in self.ops.get("parties", []) if p["name"].lower() != name.lower()],
+                         note=f"Remove known party “{name}”")
 
     @classmethod
     def upgrade(cls, old) -> "Session":
@@ -149,7 +195,7 @@ class Session:
         new = cls.from_texts(list(zip(old.names, old.texts)), policy)
         ops = dict(getattr(old, "ops", {}) or {})
         for k, default in (("decisions", {}), ("history", []), ("merges", []), ("splits", []), ("manual", []),
-                           ("deleted", []), ("aliases", []), ("parties", []), ("labels", {})):
+                           ("deleted", []), ("aliases", []), ("parties", []), ("labels", {}), ("retype", {})):
             ops.setdefault(k, default)
         new.ops = ops
         new.approved = dict(getattr(old, "approved", {}) or {})
@@ -157,18 +203,21 @@ class Session:
         new.rights_confirmed = bool(getattr(old, "rights_confirmed", False))
         return new
 
-    def redact_as(self, entity_key: str, text: str) -> None:
+    def redact_as(self, entity_key: str, text: str, note: str = "") -> None:
         """Redact a phrase as another form of an existing entity (it takes that entity's pseudonym)."""
+        self._checkpoint(note or f"Redact “{' '.join(text.split())[:40]}”")
         self.ops.setdefault("aliases", []).append((entity_key, text))
 
-    def unredact(self, entity_key: str) -> None:
+    def unredact(self, entity_key: str, note: str = "") -> None:
         """Remove a manual redaction (entity keys look like 'TYPE:manual:<phrase>')."""
+        self._checkpoint(note or f"Show “{entity_key.split(':')[-1]}” as written")
         self.ops["manual"] = [m for m in self.ops.get("manual", [])
                               if f"{m.get('type') or 'MANUAL'}:manual:{' '.join(m['text'].split()).lower()}" != entity_key]
         self.ops["decisions"].pop("E|" + entity_key, None)
 
-    def delete(self, entity_key: str) -> None:
+    def delete(self, entity_key: str, note: str = "") -> None:
         """Remove a false detection from the registry (e.g. a heading read as a company); its text stays."""
+        self._checkpoint(note or f"Show “{entity_key.split(':')[-1].title()}” as written")
         self.ops.setdefault("deleted", []).append(entity_key)
         self.ops["decisions"].pop("E|" + entity_key, None)
 
@@ -183,10 +232,13 @@ class Session:
     def unapprove(self, doc: int) -> None:
         self.approved.pop(doc, None)
 
-    def merge(self, src_key: str, dst_key: str) -> None:
+    def merge(self, src_key: str, dst_key: str, note: str = "") -> None:
+        self._checkpoint(note or "Treat as the same")
         self.ops["merges"].append((src_key, dst_key))
 
-    def split(self, entity_key: str, form: str, new_type: str | None = None, into: str | None = None) -> None:
+    def split(self, entity_key: str, form: str, new_type: str | None = None, into: str | None = None,
+              note: str = "") -> None:
         """Move every form written like ``form`` out of an entity: into a new entry (optionally of another
         type) or into an existing entity ``into``."""
+        self._checkpoint(note or f"Split off “{form}”")
         self.ops["splits"].append((entity_key, form, new_type, into))

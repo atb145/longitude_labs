@@ -421,3 +421,45 @@ def test_search_reports_what_happened_to_each_occurrence():
     assert {h["status"] for h in search(res, "brother-in-law")} == {"flagged"}
     assert search(res, "Greenwich")[0]["status"] == "generalized"         # city survives the address rewrite
     assert search(res, "zzz-not-there") == [] and search(res, " ") == []
+
+
+# ---------------------------------------------------------------- undo, type change, tidy wording
+def test_undo_reverses_every_kind_of_change():
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    s, res = run(docs)
+    base = res.outputs[0]
+    northgate = entity(res, "Northgate")
+    s.rename(northgate.key, "Broker")
+    s.redact("age 52")
+    s.add_party("Project Falcon")
+    s.delete(entity(res, "Bellcrest").key)
+    assert s.run().outputs[0] != base
+    for expected in ("Bellcrest", "Falcon", "age 52", "Broker"):
+        assert expected.lower() in s.undo().lower()
+    assert s.run().outputs[0] == base and not s.can_undo
+
+
+def test_retype_company_to_person():
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    s, res = run(docs, role_labels=False)
+    w = entity(res, "Whitcombe")
+    assert w.type == "ORGANIZATION"
+    s.retype(w.key, "PERSON")
+    w2 = entity(s.run(), "Whitcombe")
+    assert w2.type == "PERSON" and w2.label.startswith("Person")
+
+
+def test_wording_is_tidied():
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    _, res = run(docs)
+    out = res.outputs[0]
+    assert "Case No. Case" not in out and "CRD No. CRD" not in out and "CUSIP CUSIP" not in out
+    assert "approximately ~" not in out and "On March 2022" not in out
+    assert consistency_check(res)["leak_free"]
+
+
+def test_review_queue_puts_simple_cards_first():
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    _, res = run(docs)
+    kinds = [("E" if k.startswith("E|") else ("S" if res.item(k).scope == "sentence" else "F")) for k in res.queue]
+    assert kinds == sorted(kinds, key="EFS".index)

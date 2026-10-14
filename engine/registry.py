@@ -621,6 +621,9 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         if gone:
             sample = next(iter(sorted(gone.variants)), "").removeprefix(LIT)
             deleted_items.append((key, gone.type, sample))
+    for key, new_type in (ops.get("retype") or {}).items():   # "this is a person, not a company"
+        if key in ents and new_type:
+            ents[key].type = new_type
     manual = {k: v for k, v in manual.items() if k in ents}
     manual_keys = frozenset(manual)
 
@@ -925,8 +928,8 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 continue
             if pub_mode == "review" and looks_public(e) and not cue:
                 e.tier, e.rule = "review", "names.public_company_party_check"
-                e.reason = ("Public company. A party (client, counterparty, target)? Accept. "
-                            "Only cited for public facts? Keep original.")
+                e.reason = (f"{e.canonical} is a public company. Hide it if it's involved in this matter (client, "
+                            "counterparty, bank). Keep it if it's only mentioned in passing.")
                 d = decisions.get("E|" + e.key)
                 e.status = {"accept": "accepted", "keep": "kept", "edit": "edited"}[d["action"]] if d else "pending"
                 e.custom = d.get("value", "") if d else ""
@@ -961,9 +964,9 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         else:
             e.tier = "auto" if high else "review"
         if e.tier == "review":
-            why = ("a single name with no full name to link to" if e.type == "PERSON"
-                   else "found by the language model only")
-            e.reason = f"Unsure: {why}."
+            why = ("A single name with no full name elsewhere. Hide it if it's a person." if e.type == "PERSON"
+                   else "Looks like a company name, but only one check found it. Hide it?")
+            e.reason = why
 
         d = decisions.get("E|" + e.key)
         if d:
@@ -979,6 +982,23 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     for e in entities:
         for doc, s_, end, _ in e.mentions:
             mention_spans[doc].append((s_, end))
+    name_spans = defaultdict(list)
+    for e in entities:
+        if e.type in ("PERSON", "ORGANIZATION"):
+            for md, ms, me, _ in e.mentions:
+                name_spans[md].append((ms, me))
+    QUASI_WORDS = {"age": "age", "sex": "gender", "role": "job title", "place": "place", "time": "date",
+                   "event": "event", "health": "health detail", "size": "size"}
+
+    def clean_attr(cat: str, raw: str) -> str:
+        t = " ".join(raw.split()).strip(" ,.;:")
+        if cat == "age":
+            num = re.search(r"\d{1,3}", t)
+            return num.group() if num else t
+        if cat in ("role", "health", "event"):
+            return f"“{t.lower()}”"
+        return t
+
     locations = defaultdict(list)
     for d in detections:
         if d.type in ("LOCATION", "STREET_ADDRESS"):
@@ -1031,15 +1051,18 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                     for rx in rxs:
                         m = rx.search(sent)
                         if m:
-                            found[cat] = m.group().strip(" ,")
+                            found[cat] = clean_attr(cat, m.group())
                             break
-                loc = next((t for ls, le, t in locations[doc] if a <= ls and le <= b), None)
+                # Places come from the language model's location tags — but never a tag that is really a
+                # person's or company's name ("Okafor" tagged as a place).
+                loc = next((t for ls, le, t in locations[doc] if a <= ls and le <= b
+                            and not _overlaps((ls, le), name_spans[doc])), None)
                 if loc:
-                    found["place"] = loc
+                    found["place"] = " ".join(loc.split())
                 if len(found) >= policy.quasi.get("min_categories", 3):
-                    attrs = ", ".join(f"{k} ({v})" for k, v in found.items())
-                    reason = (f"{len(found)} identifying details together: {attrs}. Edit to generalize two or more, "
-                              "or keep if common.")
+                    attrs = " · ".join(f"{QUASI_WORDS.get(k, k)} {v}" for k, v in found.items())
+                    reason = (f"Together these details could point to one person: {attrs}. Make two of them vaguer, "
+                              "or keep the sentence if they're common.")
                     add_flag("quasi.combination", doc, a, b, anonymized(doc, a, b), reason, "sentence")
 
     for f in flags.values():
@@ -1073,6 +1096,42 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                     covering[doc].append(Segment(s, end, orig, f.replacement_for(orig), "flag", f.key, "FLAG", f.status))
                 continue  # an unchanged sentence flag doesn't alter the text
             segments[doc].append(Segment(s, end, orig, f.replacement_for(orig), "flag", f.key, "FLAG", f.status))
+    # Tidy the anonymized wording (labels style only): "Case No. Case 1" → "Case No. 1", "approximately ~$4
+    # million" → "approximately $4 million", "On March 2022" → "In March 2022", 'Company A ("Company A")' →
+    # "Company A". Only replacement text changes; nothing original is put back.
+    if style == "labels":
+        type_words = {"case", "crd", "cusip", "account", "ticker", "phone", "email", "price", "amount", "shares",
+                      "link", "zip", "title"}
+        for doc, text in enumerate(texts):
+            segs = sorted(segments[doc], key=lambda g: g.start)
+            extra, drop = [], set()
+            for i, g in enumerate(segs):
+                if g.kind != "entity" or not g.replacement:
+                    continue
+                prev = text[max(0, g.start - 24):g.start]
+                m = re.match(r"^([A-Za-z]+)\s+(\S+)$", g.replacement)
+                if m and m.group(1).lower() in type_words and re.search(
+                        r"(?i)\b" + re.escape(m.group(1)) + r"\b\.?\s*(?:No\.?|Number|#)?\s*:?\s*$", prev):
+                    g.replacement = m.group(2)
+                if g.replacement.startswith("~") and re.search(
+                        r"(?i)\b(?:approximately|about|around|roughly|nearly|almost|some)\s*$", prev):
+                    g.replacement = g.replacement[1:]
+                if g.type == "DATE" and re.fullmatch(r"[A-Z][a-z]+ \d{4}", g.replacement):
+                    on = re.search(r"\b([Oo])n\s+$", prev)
+                    if on:
+                        a = g.start - len(prev) + on.start()
+                        extra.append(Segment(a, a + 2, text[a:a + 2], "In" if on.group(1) == "O" else "in",
+                                             "tidy", "", "TIDY", "auto"))
+                nxt = segs[i + 1] if i + 1 < len(segs) else None
+                if (nxt is not None and nxt.kind == "entity" and nxt.ref == g.ref and i not in drop
+                        and re.fullmatch(r"\s*\((?:the\s+)?[\"“]", text[g.end:nxt.start])):
+                    close = re.match(r"[\"”]\)", text[nxt.end:nxt.end + 2])
+                    if close:   # 'Company A ("Company A")' → 'Company A'
+                        drop.add(i + 1)
+                        extra.append(Segment(g.end, nxt.end + 2, text[g.end:nxt.end + 2], "", "tidy", "", "TIDY",
+                                             "auto"))
+            segments[doc] = [g for j, g in enumerate(segs) if j not in drop] + extra
+
     outputs = []
     for doc, text in enumerate(texts):
         if covering[doc]:
@@ -1091,9 +1150,17 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
             joined = re.sub(r"[ \t]{2,}", " ", re.sub(r"[ \t]+([,.;:)])", r"\1", joined))
         outputs.append(joined)
 
-    # 8. Review queue (stable order: first appearance).
-    items = [("E|" + e.key, e.mentions[0][:2]) for e in entities if e.tier == "review" and e.status != "public"]
-    items += [("F|" + f.key, f.mentions[0][:2]) for f in flag_list]
+    # 8. Review queue: easy cards first — names and companies, then other values, then phrases, then
+    #    whole-sentence checks (privilege, identifying combinations). Within each group, first appearance.
+    def tier_of(kind: str, obj) -> int:
+        if kind == "E":
+            return 0 if obj.type in ("PERSON", "ORGANIZATION") else 1
+        if obj.scope != "sentence":
+            return 2
+        return 4 if obj.rule == "quasi.combination" else 3
+    items = [("E|" + e.key, (tier_of("E", e),) + tuple(e.mentions[0][:2])) for e in entities
+             if e.tier == "review" and e.status != "public"]
+    items += [("F|" + f.key, (tier_of("F", f),) + tuple(f.mentions[0][:2])) for f in flag_list]
     queue = [k for k, _ in sorted(items, key=lambda x: x[1])]
 
     return Result(names, texts, entities, flag_list, segments, outputs, queue, deleted_items)
@@ -1198,6 +1265,9 @@ def release_check(res: Result, warnings: list[list[dict]] | None = None, rights_
 
 def consistency_check(res: Result) -> dict:
     """Same replacement for each entity in every document + scan outputs for leaked originals."""
+    cached = res.__dict__.get("_cc")
+    if cached is not None:
+        return cached
     rows, leak_items = [], []
     for e in res.entities:
         per_doc: dict[int, set[str]] = defaultdict(set)
@@ -1227,10 +1297,12 @@ def consistency_check(res: Result) -> dict:
             "leaks": "; ".join(sorted(set(leaks))),
         })
     unreviewed = [k for k in res.queue if res.item(k).status == "pending"]
-    return {
+    out = {
         "rows": rows,
         "all_consistent": all(r["consistent"] for r in rows),
         "leak_free": not any(r["leaks"] for r in rows),
         "leak_items": leak_items,   # [{"text", "doc", "key", "label"}] — where each leak is, for the UI
         "unreviewed": unreviewed,
     }
+    res.__dict__["_cc"] = out
+    return out
