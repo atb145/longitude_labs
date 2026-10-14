@@ -1,0 +1,712 @@
+"""Cross-document entity registry and anonymization.
+
+``build()`` is a pure function of (documents, detections, policy, settings, ops). Detection
+(the slow NLP step) runs once; every toggle, decision, merge or split just re-runs ``build``,
+which takes milliseconds.
+
+Ops (user actions) are plain dicts so they can be serialized behind an API later:
+    decisions: {item_key: {"action": "accept" | "keep" | "edit", "value": str}}
+    merges:    [(src_entity_key, dst_entity_key), ...]
+    splits:    [(entity_key, variant_text), ...]
+"""
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from .detect import Detection
+from .policy import Policy
+
+HONORIFICS = {"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "sir", "hon"}
+ORG_SUFFIXES = {"llc", "l.l.c.", "inc", "inc.", "corp", "corp.", "corporation", "l.p.", "lp",
+                "ltd", "ltd.", "co", "co.", "plc", "n.a."}
+GENERIC_ORG_WORDS = {"first", "national", "american", "capital", "global", "united", "general",
+                     "international", "the", "new", "north", "south", "east", "west", "bank",
+                     "securities", "partners", "group", "holdings", "trust"}
+HONORIFIC_RX = r"(?:(?:Mr|Mrs|Ms|Miss|Mx|Dr|Prof)\.?\s+)?"
+POSSESSIVE_RX = re.compile(r"[’']s$")
+
+DECISION_LABEL = {"auto": "auto", "manual": "manual redaction", "accepted": "accepted", "kept": "overridden", "edited": "overridden",
+                  "pending": "unreviewed", "public": "kept (public company)",
+                  "setting": "kept (policy setting)"}
+
+
+# ---------------------------------------------------------------- data classes
+@dataclass
+class Entity:
+    key: str                      # stable "TYPE:normalized" id used by ops
+    type: str
+    variants: set[str]            # normalized (lowercase) variant strings
+    canonical: str = ""
+    score: float = 0.0
+    sources: set[str] = field(default_factory=set)
+    mentions: list[tuple[int, int, int, str]] = field(default_factory=list)  # (doc, start, end, text)
+    form_variant: dict[str, str] = field(default_factory=dict)  # mention text -> variant that matched it
+    label: str = ""               # registry id: "Person A"
+    proposed: str = ""            # replacement the policy proposes
+    status: str = "auto"          # auto | pending | accepted | kept | edited | public | setting
+    tier: str = "auto"            # auto | review
+    rule: str = ""
+    reason: str = ""
+    custom: str = ""
+
+    @property
+    def tokens(self) -> list[str]:
+        return self.key.split(":", 1)[1].split()
+
+    def replacement_for(self, mention_text: str) -> str:
+        if self.status in ("kept", "public", "setting"):
+            return mention_text
+        value = self.custom if self.status == "edited" else self.proposed
+        if mention_text.isupper() and len(mention_text) > 3 and self.type in ("PERSON", "ORGANIZATION"):
+            return value.upper()
+        return value
+
+    @property
+    def is_redacted(self) -> bool:
+        return self.status not in ("kept", "public", "setting")
+
+
+@dataclass
+class Flag:
+    key: str
+    rule: str
+    text: str
+    proposed: str
+    reason: str
+    mentions: list[tuple[int, int, int, str]] = field(default_factory=list)
+    status: str = "pending"       # pending | accepted | kept | edited
+    custom: str = ""
+
+    def replacement_for(self, mention_text: str) -> str:
+        if self.status == "accepted":
+            return self.proposed
+        if self.status == "edited":
+            return self.custom
+        return mention_text
+
+
+@dataclass
+class Segment:
+    start: int
+    end: int
+    original: str
+    replacement: str
+    kind: str                     # entity | flag
+    ref: str                      # entity / flag key
+    type: str
+    status: str
+
+
+@dataclass
+class Result:
+    names: list[str]
+    texts: list[str]
+    entities: list[Entity]
+    flags: list[Flag]
+    segments: list[list[Segment]]
+    outputs: list[str]
+    queue: list[str]              # item keys: "E|<entity key>" / "F|<flag key>"
+
+    def entity(self, key: str) -> Entity | None:
+        return next((e for e in self.entities if e.key == key), None)
+
+    def flag(self, key: str) -> Flag | None:
+        return next((f for f in self.flags if f.key == key), None)
+
+    def item(self, item_key: str):
+        kind, key = item_key.split("|", 1)
+        return self.entity(key) if kind == "E" else self.flag(key)
+
+
+# ---------------------------------------------------------------- normalization
+def _strip_possessive(text: str) -> str:
+    return POSSESSIVE_RX.sub("", text.strip())
+
+
+def person_tokens(text: str) -> list[str]:
+    out = []
+    for tok in re.findall(r"[A-Za-z][A-Za-z'\-]*\.?", _strip_possessive(text)):
+        base = tok.rstrip(".").lower()
+        if base in HONORIFICS or len(base) == 1:
+            continue
+        out.append(base)
+    return out
+
+
+def org_tokens(text: str) -> list[str]:
+    toks = [t.lower() for t in _strip_possessive(text).replace(",", " ").split()]
+    while toks and toks[0] == "the":
+        toks = toks[1:]
+    while toks and toks[-1] in ORG_SUFFIXES:
+        toks = toks[:-1]
+    return toks
+
+
+def _digits(text: str) -> str:
+    return re.sub(r"\D", "", text)
+
+
+def normalize(etype: str, text: str) -> str:
+    if etype == "PERSON":
+        return " ".join(person_tokens(text))
+    if etype == "ORGANIZATION":
+        return " ".join(org_tokens(text))
+    if etype in ("ACCOUNT_NUMBER", "CRD_NUMBER", "PHONE_NUMBER", "US_SSN"):
+        return _digits(text)
+    if etype == "DATE":
+        d = parse_date(text)
+        return d.strftime("%Y-%m-%d") if d else text.lower()
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def parse_date(text: str) -> datetime | None:
+    t = re.sub(r"\s+", " ", text.strip()).replace("Sept.", "Sep.")
+    for fmt in ("%B %d, %Y", "%b. %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(t, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+ADDRESS_TAIL = re.compile(r",\s+([A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?),\s+([A-Z]{2}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)"
+                          r"(?:\s+\d{5}(?:-\d{4})?)?\s*$")
+
+
+def _letters(n: int) -> str:
+    s = ""
+    n += 1
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _label(template: str, n: int) -> str:
+    return template.replace("{A}", _letters(n)).replace("{1}", str(n + 1))
+
+
+def norm_form(etype: str, text: str) -> str:
+    """How a written form is compared when splitting: honorifics, initials, possessives and case ignored."""
+    t = text.removeprefix(LIT)
+    if etype == "PERSON":
+        return " ".join(person_tokens(t))
+    if etype == "ORGANIZATION":
+        return " ".join(org_tokens(t))
+    return re.sub(r"\s+", " ", _strip_possessive(t)).lower()
+
+
+def split_key(ent_key: str, src_type: str, form: str, new_type: str | None = None) -> str:
+    """Registry key of the entity a split creates (the UI uses it to bring that entity into focus)."""
+    key = f"{new_type or src_type}:{norm_form(src_type, form)}"
+    return key if key != ent_key else f"{ent_key}#split"
+
+
+def type_title(etype: str) -> str:
+    """Display name for a type, including custom ones typed in by a reviewer ("OTHER:Project codename")."""
+    return etype.split(":", 1)[1] if etype.startswith("OTHER:") else etype.replace("_", " ").title()
+
+
+# ---------------------------------------------------------------- matching patterns
+ALIAS_RX = re.compile(r'\s*\((?:the\s+|collectively,?\s+)?[“"]([^”"\n]{2,60})[”"](?:\s+or\s+(?:the\s+)?[“"]([^”"\n]{2,60})[”"])?')
+LIT = "lit:"  # variant prefix: an exact alias defined in the text, e.g. (“MGM”) or (“J. Reichman”)
+
+
+def _variant_pattern(etype: str, variant: str) -> tuple[str, int]:
+    """Regex for finding a variant anywhere in the documents."""
+    if variant.startswith(LIT):
+        words = variant[len(LIT):].split()
+        body = r"\s+".join(map(re.escape, words))
+        upper = r"\s+".join(map(re.escape, (w.upper() for w in words)))
+        return r"(?<![\w])(?:" + body + "|" + upper + r")(?![\w])", 0
+    if etype == "PERSON":
+        toks = variant.split()
+        if len(toks) >= 2:
+            body = re.escape(toks[0]) + r"(?:\s+[A-Za-z]\.?)*\s+" + r"\s+".join(map(re.escape, toks[1:]))
+            return HONORIFIC_RX + r"\b" + body + r"\b", re.IGNORECASE
+        cap = toks[0].capitalize()
+        # Surname alone: Title-case or ALL-CAPS only, with optional honorific / initial.
+        return (r"(?:(?:Mr|Mrs|Ms|Miss|Mx|Dr|Prof)\.?\s+|\b[A-Z]\.\s+)?\b(?:" + re.escape(cap) + "|"
+                + re.escape(cap.upper()) + r")\b"), 0
+    if etype == "ORGANIZATION":
+        toks = variant.split()
+        if len(toks) >= 2:
+            suffix = r"(?:,?\s+(?:LLC|L\.L\.C\.|Inc\.?|Corp\.?|Corporation|L\.P\.|LP|Ltd\.?|N\.A\.))?"
+            return r"\b" + r"\s+".join(map(re.escape, toks)) + r"\b" + suffix, re.IGNORECASE
+        cap = toks[0].capitalize()
+        return r"\b(?:" + re.escape(cap) + "|" + re.escape(cap.upper()) + r")\b", 0
+    if etype in ("ACCOUNT_NUMBER", "CRD_NUMBER", "PHONE_NUMBER", "US_SSN"):
+        return None, 0  # literal variants handled via mention texts
+    return None, 0
+
+
+def _keep_spans(policy: Policy, text: str) -> list[tuple[int, int]]:
+    spans = []
+    for term in policy.keep_terms:
+        flags = 0 if term.isupper() and len(term) <= 5 else re.IGNORECASE
+        body = r"\s+".join(map(re.escape, term.split()))  # PDF text wraps lines mid-name
+        spans += [m.span() for m in re.finditer(r"\b" + body + r"\b", text, flags)]
+    for rx in policy.keep_patterns:
+        spans += [m.span() for m in rx.finditer(text)]
+    return spans
+
+
+def _overlaps(a: tuple[int, int], spans) -> bool:
+    return any(a[0] < e and s < a[1] for s, e in spans)
+
+
+def _greedy(cands: list[tuple]) -> list[tuple]:
+    """Pick non-overlapping candidates; input already sorted by priority."""
+    chosen: list[tuple] = []
+    for c in cands:
+        if not _overlaps((c[0], c[1]), [(x[0], x[1]) for x in chosen]):
+            chosen.append(c)
+    return sorted(chosen)
+
+
+def _clean_name(d: Detection, policy: Policy, lower_words: set[str]) -> Detection | None:
+    """Trim words detectors glue onto names ("Defendants Meyer Global LLC", "Company A wired")."""
+    if d.type not in ("PERSON", "ORGANIZATION"):
+        return d
+    if re.sub(r"\s+", " ", _strip_possessive(d.text)).strip("“”\"").lower() in policy.not_entities:
+        return None
+    toks = list(re.finditer(r"\S+", d.text))
+
+    def bare(t):
+        return t.group().strip("“”\"(),;:").lower()
+
+    def lead_noise(t):
+        w = bare(t)
+        return (w in policy.name_noise or t.group()[:1].islower() or re.fullmatch(r"[ivx]+\.?", w) is not None
+                or w in {"defendant", "defendants", "plaintiff", "respondent"})
+
+    i, j = 0, len(toks)
+    while i < j and lead_noise(toks[i]):
+        i += 1
+    # keep only the first capitalized run (connectors allowed inside it)
+    k = i
+    while k < j and (toks[k].group()[:1].isupper() or toks[k].group()[:1].isdigit() or bare(toks[k]) in {"and", "of", "&", "for", "de"}):
+        k += 1
+    j = k
+    while j > i and bare(toks[j - 1]) in {"and", "of", "&", "for", "de"}:
+        j -= 1
+    if i >= j:
+        return None
+    start, end = d.start + toks[i].start(), d.start + toks[j - 1].end()
+    text = d.text[toks[i].start():toks[j - 1].end()].rstrip(",;:“”\"(")
+    end = start + len(text)
+    norm = re.sub(r"\s+", " ", _strip_possessive(text)).strip("“”\"").lower()
+    if not norm or norm in policy.not_entities:
+        return None
+    # A single capitalized word that also appears in lowercase elsewhere is a common word, not a name.
+    if d.source == "SpacyRecognizer" and " " not in norm and norm in lower_words:
+        return None
+    return Detection(d.doc, start, end, text, d.type, d.score, d.source)
+
+
+def _propagate(texts, ents, keep, manual=frozenset()):
+    for e in ents.values():
+        e.mentions = []
+        e.form_variant = {}
+    for doc, text in enumerate(texts):
+        cands = []
+        for e in ents.values():
+            for v in e.variants:
+                pat, fl = _variant_pattern(e.type, v)
+                if pat is None:
+                    pat = (r"\b" if v[:1].isalnum() else "") + re.escape(v) + (r"\b" if v[-1:].isalnum() else "")
+                    fl = re.IGNORECASE
+                for m in re.finditer(pat, text, fl):
+                    if e.key in manual or not _overlaps(m.span(), keep[doc]):  # a manual redaction beats the keep list
+                        cands.append((m.start(), m.end(), e.key, v))
+        cands.sort(key=lambda c: (-(c[1] - c[0]), c[2] not in manual, not c[3].startswith(LIT), c[0]))
+        for s, end, key, v in _greedy(cands):
+            ents[key].mentions.append((doc, s, end, text[s:end]))
+            ents[key].form_variant[text[s:end]] = v
+
+
+# ---------------------------------------------------------------- build
+def build(names: list[str], texts: list[str], detections: list[Detection], policy: Policy,
+          settings: dict, ops: dict) -> Result:
+    decisions = ops.get("decisions", {})
+    disabled = set(settings.get("disabled", []))
+    keep = [[] if "keep_list" in disabled else _keep_spans(policy, t) for t in texts]
+    detections = [d for d in detections if d.source not in disabled]  # edge-case recognizers switched off
+
+    # 1. Resolve overlapping detections per document (policy recognizers beat spaCy, longer wins).
+    lower_words = {w for t in texts for w in re.findall(r"(?<![\w’'-])[a-z][a-z’'-]+", t)}
+    locations = {re.sub(r"\s+", " ", d.text).lower() for d in detections if d.type == "LOCATION"}
+    cleaned = [_clean_name(d, policy, lower_words) for d in detections]
+    usable = [d for d in cleaned
+              if d and policy.spec(d.type).get("action") != "ignore" and not _overlaps((d.start, d.end), keep[d.doc])
+              and re.sub(r"\s+", " ", _strip_possessive(d.text)).lower() not in policy.not_entities]
+    # A word the language model calls a company but that another detector owns (a ticker, or a
+    # person's surname elsewhere in the set) belongs to that other entity.
+    owned = {d.text.lower() for d in usable if d.source != "SpacyRecognizer" and d.type != "ORGANIZATION"}
+    person_words = {t for d in usable if d.type == "PERSON" and len(person_tokens(d.text)) >= 2
+                    for t in person_tokens(d.text)}
+    owned |= person_words | locations | {t for loc in locations for t in loc.split()}
+
+    def generic(d):  # every word of the name is also used as an ordinary lowercase word
+        toks = org_tokens(d.text)
+        return d.type == "ORGANIZATION" and toks and all(t.rstrip("’'s") in lower_words for t in toks)
+    usable = [d for d in usable if not generic(d)
+              and not (d.type == "ORGANIZATION" and len(org_tokens(d.text)) == 1 and org_tokens(d.text)[0] in owned)]
+    usable = [d for d in usable if not (d.type == "ORGANIZATION" and d.source == "SpacyRecognizer"
+                                        and (" ".join(org_tokens(d.text)) in owned
+                                             or org_tokens(d.text)[:1] and org_tokens(d.text)[0].rstrip("’'s") in person_words))]
+    resolved: list[Detection] = []
+    for doc in range(len(texts)):
+        cands = sorted((d for d in usable if d.doc == doc),
+                       key=lambda d: (d.source == "SpacyRecognizer", -(d.end - d.start), -d.score))
+        resolved += [x[2] for x in _greedy([(d.start, d.end, d) for d in cands])]
+
+    # 2. Group detections into registry entities.
+    ents: dict[str, Entity] = {}
+
+    def add(etype: str, norm: str, det: Detection, variant: str | None = None) -> Entity:
+        key = f"{etype}:{norm}"
+        e = ents.setdefault(key, Entity(key=key, type=etype, variants=set()))
+        e.variants.add(variant or norm)
+        e.score = max(e.score, det.score)
+        e.sources.add(det.source)
+        return e
+
+    orgs = sorted((d for d in resolved if d.type == "ORGANIZATION"), key=lambda d: -len(org_tokens(d.text)))
+    for d in orgs:
+        toks = org_tokens(d.text)
+        if not toks or all(t in GENERIC_ORG_WORDS or t in policy.not_entities for t in toks):
+            continue
+        hit = next((e for e in ents.values() if e.type == "ORGANIZATION"
+                    and (e.tokens == toks or e.tokens[:len(toks)] == toks)), None)
+        add("ORGANIZATION", " ".join(hit.tokens) if hit else " ".join(toks), d, " ".join(toks))
+
+    org_words = {v for e in ents.values() for v in e.variants} | {
+        e.tokens[0] for e in ents.values() if len(e.tokens) > 1 and e.tokens[0] not in GENERIC_ORG_WORDS}
+    persons = sorted((d for d in resolved if d.type == "PERSON"), key=lambda d: -len(person_tokens(d.text)))
+    for d in persons:
+        toks = person_tokens(d.text)
+        if not toks or " ".join(toks) in org_words:
+            continue  # spaCy sometimes tags a company short-name as a person
+        pe = [e for e in ents.values() if e.type == "PERSON"]
+        hits = [e for e in pe if e.tokens == toks]
+        if not hits and len(toks) >= 2:
+            hits = [e for e in pe if e.tokens[0] == toks[0] and e.tokens[-1] == toks[-1]]
+        if not hits and len(toks) == 1:
+            hits = [e for e in pe if len(e.tokens) > 1 and e.tokens[-1] == toks[0]]
+        target = " ".join(hits[0].tokens) if len(hits) == 1 else " ".join(toks)
+        add("PERSON", target, d, " ".join(toks))
+
+    for d in resolved:
+        if d.type not in ("PERSON", "ORGANIZATION"):
+            add(d.type, normalize(d.type, d.text), d, d.text.strip())
+
+    # Derived variants so short forms are caught everywhere (surname, company short name).
+    # A surname shared by two people (David and Justine Reichman) is ambiguous on its own, so it is
+    # only linked through an explicit alias in the text, never derived.
+    surnames = defaultdict(int)
+    for e in ents.values():
+        if e.type == "PERSON" and len(e.tokens) >= 2:
+            surnames[e.tokens[-1]] += 1
+    first_words = defaultdict(int)
+    for e in ents.values():
+        if e.type == "ORGANIZATION" and len(e.tokens) >= 2:
+            first_words[e.tokens[0]] += 1
+    for e in ents.values():
+        if e.type == "PERSON" and len(e.tokens) >= 2:
+            e.variants.add(f"{e.tokens[0]} {e.tokens[-1]}")
+            if surnames[e.tokens[-1]] == 1 and len(e.tokens[-1]) >= 3 and not re.fullmatch(r"[ivx]+", e.tokens[-1]):
+                e.variants.add(e.tokens[-1])
+            else:
+                e.variants.discard(e.tokens[-1])
+        if e.type == "ORGANIZATION" and len(e.tokens) >= 2:
+            e.variants.add(" ".join(e.tokens))
+            w = e.tokens[0]
+            if (w not in GENERIC_ORG_WORDS and w not in policy.not_entities and len(w) >= 4 and first_words[w] == 1 and w not in surnames
+                    and w not in lower_words):
+                e.variants.add(w)
+    ambiguous = {n for n, c in surnames.items() if c > 1}
+    for key in [k for k, e in ents.items() if e.type == "PERSON" and len(e.tokens) == 1 and e.tokens[0] in ambiguous]:
+        del ents[key]  # resolved by aliases below
+
+    # Manual redactions from the Documents page: a literal phrase, redacted everywhere it appears.
+    manual: dict[str, dict] = {}
+    for item in ops.get("manual", []):
+        phrase = re.sub(r"\s+", " ", item["text"].strip())
+        etype = item.get("type") or "MANUAL"
+        key = f"{etype}:manual:{phrase.lower()}"
+        e = ents.setdefault(key, Entity(key=key, type=etype, variants=set()))
+        e.variants.add(LIT + phrase)
+        e.score = 1.0
+        e.sources.add("manual")
+        manual[key] = item
+    # A phrase redacted "as" an existing entity joins that entity (same pseudonym everywhere).
+    for target, phrase in ops.get("aliases", []):
+        if target in ents:
+            ents[target].variants.add(LIT + re.sub(r"\s+", " ", phrase.strip()))
+            manual.setdefault(target, None)
+
+    # 3. User splits and merges. A split moves every variant that is the same written name as the
+    #    chosen form (Okafor, Mr. Okafor, OKAFOR, Okafor's and the defined alias “Okafor” all go
+    #    together), optionally into another entity type or into an existing entity.
+    split_into: set[str] = set()
+    for op in ops.get("splits", []):
+        ent_key, form, new_type, into = (list(op) + [None, None])[:4]
+        src = ents.get(ent_key)
+        if not src:
+            continue
+        target = norm_form(src.type, form)
+        moving = {v for v in src.variants if norm_form(src.type, v) == target}
+        if not moving:
+            continue
+        etype = new_type or src.type
+        if into and into in ents and into != ent_key:
+            dst = ents[into]
+        else:
+            new_key = split_key(ent_key, src.type, form, new_type)
+            dst = ents.setdefault(new_key, Entity(key=new_key, type=etype, variants=set()))
+        src.variants -= moving
+        dst.variants |= moving
+        split_into.add(dst.key)
+        dst.score, dst.sources = max(dst.score, src.score), dst.sources | src.sources
+        if not src.variants:
+            del ents[ent_key]
+    for src_key, dst_key in ops.get("merges", []):
+        src, dst = ents.get(src_key), ents.get(dst_key)
+        if src and dst and src is not dst:
+            dst.variants |= src.variants
+            dst.score, dst.sources = max(dst.score, src.score), dst.sources | src.sources
+            del ents[src_key]
+    manual = {k: v for k, v in manual.items() if k in ents}
+    manual_keys = frozenset(manual)
+
+    # 4. Propagate: find every occurrence of every variant in every document. Then read defined-term
+    #    aliases that follow a mention — Meyer Global Management LLC (“MGM”) — and propagate again.
+    _propagate(texts, ents, keep, manual_keys)
+    for e in list(ents.values()):
+        for doc, _, end, _ in e.mentions:
+            m = ALIAS_RX.match(texts[doc], end)
+            for alias in (m.groups() if m else ()):
+                if not alias or not alias[:1].isupper():
+                    continue
+                norm = re.sub(r"\s+", " ", alias).strip()
+                words = norm.lower().split()
+                if norm.lower() in policy.not_entities or all(w in lower_words for w in words):
+                    continue  # generic defined term (“Defendant”, “Relevant Period”)
+                full = e.tokens if e.type == "PERSON" else org_tokens(e.canonical or " ".join(e.tokens)) or e.tokens
+                full = [t for t in re.sub(r"[^\w\s]", " ", " ".join(full)).lower().split()]
+                bare = [w.rstrip(".") for w in words]
+                related = (all(any(t == w or (len(w) == 1 and t.startswith(w)) for t in full) for w in bare)
+                           or norm.replace(".", "").lower() == "".join(t[0] for t in full if t not in ORG_SUFFIXES)
+                           or norm.lower().replace(" ", "").startswith(full[0]))
+                if not related:
+                    continue  # the alias names something else (“Backdated Letter”)
+                owner = next((o for o in ents.values() if o is not e and o.key in split_into
+                              and any(norm_form(o.type, v) == norm_form(e.type, norm) for v in o.variants)), None)
+                if owner is not None:
+                    continue  # that name already belongs to another entry (e.g. a reviewer split it off)
+                e.variants.add(LIT + norm)
+    if any(v.startswith(LIT) for e in ents.values() for v in e.variants):
+        _propagate(texts, ents, keep, manual_keys)
+
+    entities = [e for e in ents.values() if e.mentions]
+    for e in entities:
+        e.mentions.sort()
+    entities.sort(key=lambda e: e.mentions[0][:2])
+
+    # 5. Labels, proposed replacements, confidence tiers, decisions.
+    counters: dict[str, int] = defaultdict(int)
+    public = [p.lower() for p in policy.public_companies]
+    # Detected entities are numbered first, manual redactions after them, so adding one by hand
+    # never renumbers the pseudonyms a reviewer has already seen.
+    hand = {k for k, v in manual.items() if v}  # manual entries proper (not aliases joined to an entity)
+    for e in [x for x in entities if x.key not in hand] + [x for x in entities if x.key in hand]:
+        spec = policy.spec(e.type)
+        default = manual[e.key].get("label") if e.key in hand and manual[e.key].get("label") else (
+            "Redacted {1}" if e.type == "MANUAL" else type_title(e.type) + " {1}")
+        e.label = _label(spec.get("label", default), counters[e.type])
+        counters[e.type] += 1
+    for e in entities:
+        spec = policy.spec(e.type)
+        e.rule = spec.get("rule", "")
+        e.reason = spec.get("reason", "")
+        if e.key in hand:
+            e.canonical = re.sub(r"\s+", " ", e.mentions[0][3])
+            e.proposed = manual[e.key].get("replacement") or e.label
+            e.rule, e.reason, e.tier = "manual", "Redacted by hand on the Documents page.", "auto"
+            d = decisions.get("E|" + e.key)
+            e.status = {"accept": "manual", "keep": "kept", "edit": "edited"}[d["action"]] if d else "manual"
+            e.custom = d.get("value", "") if d else ""
+            continue
+        if e.type in disabled:
+            e.proposed = e.label
+            e.status, e.rule, e.reason = "setting", f"{e.rule} (off)", "This rule bucket is switched off."
+            continue
+        forms = [re.sub(r"\s+", " ", re.sub("^" + HONORIFIC_RX, "", _strip_possessive(m[3]))) for m in e.mentions]
+        mixed = [f for f in forms if not f.isupper()] or (
+            [f.title() for f in forms] if e.type in ("PERSON", "ORGANIZATION") else forms)
+        e.canonical = max(mixed, key=len)
+        e.proposed = e.label
+
+        if e.type == "DATE":
+            d = parse_date(e.mentions[0][3])
+            e.proposed = d.strftime("%B %Y") if d else e.label
+            if settings.get("date_mode") == "exact":
+                e.status, e.rule, e.reason = "setting", "generalize.dates (off)", "Exact dates are kept by your policy setting."
+                continue
+        if e.type == "STREET_ADDRESS":
+            m = ADDRESS_TAIL.search(e.mentions[0][3])
+            if settings.get("generalize_addresses", True) and m:
+                e.proposed = f"{m.group(1)}, {m.group(2)}"
+            else:
+                e.proposed, e.rule = f"[{e.label}]", "always_redact.addresses"
+        if e.type == "ORGANIZATION":
+            canon = " ".join(org_tokens(e.canonical))
+            if settings.get("keep_public_companies", True) and any(canon == " ".join(org_tokens(p)) for p in public):
+                e.status, e.rule = "public", "keep_list.public_companies"
+                e.reason = "Public companies are on the keep list while the toggle is on."
+                continue
+            if not settings.get("redact_organizations", True):
+                e.status, e.rule, e.reason = "setting", "always_redact.private_organizations (off)", "Organization redaction is turned off."
+                continue
+
+        high = e.score >= policy.auto_apply
+        if spec.get("auto"):
+            e.tier = "auto"
+        elif e.type == "PERSON":
+            e.tier = "auto" if high and len(e.tokens) >= 2 else "review"
+        elif e.type == "ORGANIZATION":
+            e.tier = "auto" if any(s.startswith("org_suffix") for s in e.sources) else "review"
+        else:
+            e.tier = "auto" if high else "review"
+        if e.tier == "review":
+            why = ("only a single name was found, with no full name to link it to" if e.type == "PERSON"
+                   else "it was found by the language model, not a company-name pattern")
+            e.reason = f"Needs a check because {why}. If it is real: {e.reason[0].lower()}{e.reason[1:]}"
+
+        d = decisions.get("E|" + e.key)
+        if d:
+            e.status = {"accept": "accepted", "keep": "kept", "edit": "edited"}[d["action"]]
+            e.custom = d.get("value", "")
+        else:
+            e.status = "auto" if e.tier == "auto" else "pending"
+
+    # 6. Flags (relationship phrases): never auto-changed.
+    flags: dict[str, Flag] = {}
+    mention_spans = defaultdict(list)
+    for e in entities:
+        for doc, s, end, _ in e.mentions:
+            mention_spans[doc].append((s, end))
+    for doc, text in enumerate(texts):
+        cands = []
+        for rule in (r for r in policy.flags if r.id not in disabled):
+            for m in rule.regex.finditer(text):
+                s, end = m.span("v") if "v" in rule.regex.groupindex else m.span()
+                if not _overlaps((s, end), mention_spans[doc]):
+                    cands.append((s, end, rule))
+        cands.sort(key=lambda c: (-(c[1] - c[0]), c[0]))
+        for s, end, rule in _greedy(cands):
+            phrase = text[s:end]
+            key = f"{rule.id}|{phrase.lower()}"
+            f = flags.setdefault(key, Flag(key=key, rule=rule.id, text=phrase, proposed=rule.replacement,
+                                           reason=rule.reason))
+            f.mentions.append((doc, s, end, phrase))
+    for f in flags.values():
+        d = decisions.get("F|" + f.key)
+        if d:
+            f.status = {"accept": "accepted", "keep": "kept", "edit": "edited"}[d["action"]]
+            f.custom = d.get("value", "")
+    flag_list = sorted(flags.values(), key=lambda f: f.mentions[0][:2])
+
+    # 7. Render.
+    segments: list[list[Segment]] = [[] for _ in texts]
+    for e in entities:
+        for doc, s, end, orig in e.mentions:
+            segments[doc].append(Segment(s, end, orig, e.replacement_for(orig), "entity", e.key, e.type, e.status))
+    for f in flag_list:
+        for doc, s, end, orig in f.mentions:
+            segments[doc].append(Segment(s, end, orig, f.replacement_for(orig), "flag", f.key, "FLAG", f.status))
+    outputs = []
+    for doc, text in enumerate(texts):
+        segments[doc].sort(key=lambda g: g.start)
+        out, pos = [], 0
+        for g in segments[doc]:
+            out += [text[pos:g.start], g.replacement]
+            pos = g.end
+        out.append(text[pos:])
+        outputs.append("".join(out))
+
+    # 8. Review queue (stable order: first appearance).
+    items = [("E|" + e.key, e.mentions[0][:2]) for e in entities if e.tier == "review" and e.status != "public"]
+    items += [("F|" + f.key, f.mentions[0][:2]) for f in flag_list]
+    queue = [k for k, _ in sorted(items, key=lambda x: x[1])]
+
+    return Result(names, texts, entities, flag_list, segments, outputs, queue)
+
+
+# ---------------------------------------------------------------- reports
+def redaction_log(res: Result) -> list[dict]:
+    rows = []
+    for e in res.entities:
+        reps = sorted({e.replacement_for(m[3]) for m in e.mentions})
+        rows.append({
+            "original": " | ".join(sorted({m[3] for m in e.mentions})),
+            "replacement": " | ".join(reps),
+            "entity_type": e.type,
+            "registry_id": e.label,
+            "documents": "; ".join(res.names[d] for d in sorted({m[0] for m in e.mentions})),
+            "occurrences": len(e.mentions),
+            "rule": e.rule,
+            "decision": DECISION_LABEL.get(e.status, e.status),
+            "confidence": round(e.score, 2),
+        })
+    for f in res.flags:
+        rows.append({
+            "original": f.text,
+            "replacement": f.replacement_for(f.text),
+            "entity_type": "RELATIONSHIP_PHRASE",
+            "registry_id": "",
+            "documents": "; ".join(res.names[d] for d in sorted({m[0] for m in f.mentions})),
+            "occurrences": len(f.mentions),
+            "rule": f.rule,
+            "decision": DECISION_LABEL.get(f.status, f.status),
+            "confidence": None,
+        })
+    return rows
+
+
+def consistency_check(res: Result) -> dict:
+    """Same replacement for each entity in every document + scan outputs for leaked originals."""
+    rows = []
+    for e in res.entities:
+        per_doc: dict[int, set[str]] = defaultdict(set)
+        for doc, _, _, orig in e.mentions:
+            per_doc[doc].add(e.replacement_for(orig).casefold() if e.is_redacted else "(kept)")
+        all_reps = set().union(*per_doc.values())
+        leaks = []
+        if e.is_redacted:
+            originals = {_strip_possessive(m[3]) for m in e.mentions}
+            originals = {re.sub(HONORIFIC_RX, "", o) for o in originals}
+            for doc, out in enumerate(res.outputs):
+                for o in originals:
+                    if len(o) >= 3 and re.search(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", out, re.IGNORECASE):
+                        leaks.append(f"{o!r} in {res.names[doc]}")
+        rows.append({
+            "registry_id": e.label,
+            "entity_type": e.type,
+            "original": e.canonical,
+            "replacement": e.replacement_for(e.canonical) if e.is_redacted else "(kept)",
+            "documents": len(per_doc),
+            "consistent": len(all_reps) == 1,
+            "leaks": "; ".join(sorted(set(leaks))),
+        })
+    unreviewed = [k for k in res.queue if res.item(k).status == "pending"]
+    return {
+        "rows": rows,
+        "all_consistent": all(r["consistent"] for r in rows),
+        "leak_free": not any(r["leaks"] for r in rows),
+        "unreviewed": unreviewed,
+    }
