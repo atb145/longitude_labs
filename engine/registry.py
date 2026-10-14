@@ -11,17 +11,19 @@ Ops (user actions) are plain dicts so they can be serialized behind an API later
 """
 from __future__ import annotations
 
+import hashlib
+import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .detect import Detection
 from .policy import Policy
 
 HONORIFICS = {"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "sir", "hon"}
-ORG_SUFFIXES = {"llc", "l.l.c.", "inc", "inc.", "corp", "corp.", "corporation", "l.p.", "lp",
-                "ltd", "ltd.", "co", "co.", "plc", "n.a."}
+ORG_SUFFIXES = {"llc", "l.l.c.", "inc", "inc.", "incorporated", "corp", "corp.", "corporation", "company",
+                "l.p.", "lp", "ltd", "ltd.", "limited", "co", "co.", "plc", "n.a.", "ag", "sa", "s.a.", "n.v.", "gmbh"}
 GENERIC_ORG_WORDS = {"first", "national", "american", "capital", "global", "united", "general",
                      "international", "the", "new", "north", "south", "east", "west", "bank",
                      "securities", "partners", "group", "holdings", "trust"}
@@ -51,6 +53,7 @@ class Entity:
     rule: str = ""
     reason: str = ""
     custom: str = ""
+    nick_target: str = ""         # key of the person this may be a nickname of ("Bob" → Robert Vance)
 
     @property
     def tokens(self) -> list[str]:
@@ -79,6 +82,7 @@ class Flag:
     mentions: list[tuple[int, int, int, str]] = field(default_factory=list)
     status: str = "pending"       # pending | accepted | kept | edited
     custom: str = ""
+    scope: str = "match"          # "sentence" flags cover a whole sentence (combinations, privilege)
 
     def replacement_for(self, mention_text: str) -> str:
         if self.status == "accepted":
@@ -109,6 +113,7 @@ class Result:
     segments: list[list[Segment]]
     outputs: list[str]
     queue: list[str]              # item keys: "E|<entity key>" / "F|<flag key>"
+    deleted: list[tuple[str, str, str]] = field(default_factory=list)  # (key, type, sample text)
 
     def entity(self, key: str) -> Entity | None:
         return next((e for e in self.entities if e.key == key), None)
@@ -185,6 +190,57 @@ def _letters(n: int) -> str:
     return s
 
 
+_ABBR = re.compile(r"\b(?:Mr|Mrs|Ms|Dr|No|Nos|Inc|Co|Corp|Ltd|Jr|Sr|St|v|vs|U\.S|Wash|[A-Z])$")
+_CUT = re.compile(r"[.!?][\"”’)]*\s+|:[ \t]*\n|\n\s*\n|\n(?=\s*(?:\d{1,3}\.|[IVX]+\.)\s)")
+
+
+def sentence_spans(text: str) -> list[tuple[int, int]]:
+    cuts = [0]
+    for m in _CUT.finditer(text):
+        if m.group()[0] in ".!?" and (_ABBR.search(text[:m.start()])
+                                       or re.search(r"(?:^|\n)\s*(?:\d{1,3}|[IVX]+)$", text[:m.start()])):
+            continue
+        cuts.append(m.end())
+    cuts = sorted(set(cuts + [len(text)]))
+    out = []
+    for a, b in zip(cuts, cuts[1:]):
+        seg = text[a:b]
+        lead = len(seg) - len(seg.lstrip())
+        trail = len(seg.rstrip())
+        if trail > lead:
+            out.append((a + lead, a + trail))
+    return out
+
+
+_UNITS = {"thousand": 1e3, "k": 1e3, "million": 1e6, "m": 1e6, "mm": 1e6, "billion": 1e9, "b": 1e9, "bn": 1e9}
+
+
+def round_figure(text: str) -> str:
+    """$4.75M → ~$5M · $68.7 billion → ~$70 billion · 41,000 shares → ~40,000 shares. One significant
+    figure, unit kept, never random noise (noise would break totals)."""
+    m = re.match(r"(\$?)\s?([\d,]+(?:\.\d+)?)(?:\s?(million|billion|thousand|[MBKmbk]|bn|mm)\b)?(.*)$", text.strip())
+    if not m:
+        return text
+    cur, num, unit, rest = m.groups()
+    value = float(num.replace(",", ""))
+    if value <= 0:
+        return text
+    exp = math.floor(math.log10(value))
+    r = round(value / 10 ** exp) * 10 ** exp
+    shown = f"{r:,.0f}" if r >= 1 else f"{r:g}"
+    sep = " " if unit and len(unit) > 2 else ""
+    return f"~{cur}{shown}{sep}{unit or ''}{rest}"
+
+
+def _date_like(original: str, d: datetime) -> str:
+    o = original.strip()
+    if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", o):
+        return d.strftime("%m/%d/%Y")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", o):
+        return d.strftime("%Y-%m-%d")
+    return f"{d.strftime('%B')} {d.day}, {d.year}"
+
+
 def _label(template: str, n: int) -> str:
     return template.replace("{A}", _letters(n)).replace("{1}", str(n + 1))
 
@@ -234,10 +290,13 @@ def _variant_pattern(etype: str, variant: str) -> tuple[str, int]:
     if etype == "ORGANIZATION":
         toks = variant.split()
         if len(toks) >= 2:
-            suffix = r"(?:,?\s+(?:LLC|L\.L\.C\.|Inc\.?|Corp\.?|Corporation|L\.P\.|LP|Ltd\.?|N\.A\.))?"
+            # Suffixes are matched case-sensitively even though the name isn't (", AG" vs ", against").
+            suffix = (r"(?-i:(?:,?\s+(?:LLC|L\.L\.C\.|Inc\.?|Incorporated|Corp\.?|Corporation|Company|Co\.|L\.P\.|LP|"
+                      r"Ltd\.?|Limited|N\.A\.|plc|PLC|AG|SA|S\.A\.|N\.V\.|GmbH|Holdings)(?!\w))?)")
             return r"\b" + r"\s+".join(map(re.escape, toks)) + r"\b" + suffix, re.IGNORECASE
         cap = toks[0].capitalize()
-        return r"\b(?:" + re.escape(cap) + "|" + re.escape(cap.upper()) + r")\b", 0
+        suffix = r"(?:,?\s+(?:LLC|Inc\.?|Incorporated|Corp\.?|Corporation|Company|Co\.|Ltd\.?|Limited|plc|PLC|Holdings))?"
+        return r"\b(?:" + re.escape(cap) + "|" + re.escape(cap.upper()) + r")\b" + suffix, 0
     if etype in ("ACCOUNT_NUMBER", "CRD_NUMBER", "PHONE_NUMBER", "US_SSN"):
         return None, 0  # literal variants handled via mention texts
     return None, 0
@@ -288,7 +347,9 @@ def _clean_name(d: Detection, policy: Policy, lower_words: set[str]) -> Detectio
         i += 1
     # keep only the first capitalized run (connectors allowed inside it)
     k = i
-    while k < j and (toks[k].group()[:1].isupper() or toks[k].group()[:1].isdigit() or bare(toks[k]) in {"and", "of", "&", "for", "de"}):
+    while k < j and (toks[k].group()[:1].isupper() or toks[k].group()[:1].isdigit() or bare(toks[k]) in {"and", "of", "&", "de"}):
+        if k > i and bare(toks[k]) in policy.name_noise:
+            break  # "Microsoft Announces Partnership…" → "Microsoft"
         k += 1
     j = k
     while j > i and bare(toks[j - 1]) in {"and", "of", "&", "for", "de"}:
@@ -337,7 +398,10 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     detections = [d for d in detections if d.source not in disabled]  # edge-case recognizers switched off
 
     # 1. Resolve overlapping detections per document (policy recognizers beat spaCy, longer wins).
-    lower_words = {w for t in texts for w in re.findall(r"(?<![\w’'-])[a-z][a-z’'-]+", t)}
+    # Words used in lowercase are ordinary words — except inside web addresses and emails, where
+    # "news.microsoft.com" must not turn Microsoft into an ordinary word.
+    addr = re.compile(r"\S+@\S+|\b(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|gov|edu|io|co|ai|us|uk)\b\S*")
+    lower_words = {w for t in texts for w in re.findall(r"(?<![\w’'-])[a-z][a-z’'-]+", addr.sub(" ", t))}
     locations = {re.sub(r"\s+", " ", d.text).lower() for d in detections if d.type == "LOCATION"}
     cleaned = [_clean_name(d, policy, lower_words) for d in detections]
     usable = [d for d in cleaned
@@ -480,6 +544,13 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
             dst.variants |= src.variants
             dst.score, dst.sources = max(dst.score, src.score), dst.sources | src.sources
             del ents[src_key]
+    # Entities a reviewer deleted ("not an entity", e.g. a heading the model picked up) are never matched.
+    deleted_items = []
+    for key in ops.get("deleted", []):
+        gone = ents.pop(key, None)
+        if gone:
+            sample = next(iter(sorted(gone.variants)), "").removeprefix(LIT)
+            deleted_items.append((key, gone.type, sample))
     manual = {k: v for k, v in manual.items() if k in ents}
     manual_keys = frozenset(manual)
 
@@ -509,10 +580,48 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 if owner is not None:
                     continue  # that name already belongs to another entry (e.g. a reviewer split it off)
                 e.variants.add(LIT + norm)
+    # Quoted nicknames are explicit: Jonathan "Jack" Mercer → "Jack" is Person A.
+    for e in list(ents.values()):
+        if e.type == "PERSON" and len(e.tokens) >= 2:
+            rx = re.compile(re.escape(e.tokens[0]) + r"\s+[“\"']([A-Z][a-z]{1,15})[”\"']\s+(?:[A-Z]\.\s+)?"
+                            + re.escape(e.tokens[-1]), re.IGNORECASE)
+            for t in texts:
+                for m in rx.finditer(t):
+                    e.variants.add(LIT + m.group(1))
     if any(v.startswith(LIT) for e in ents.values() for v in e.variants):
         _propagate(texts, ents, keep, manual_keys)
 
     entities = [e for e in ents.values() if e.mentions]
+
+    # A first name used alone that is a common nickname of someone in the registry ("Jack" for Jonathan)
+    # goes to review with that person's pseudonym proposed — unlinked it would leak or become a new person.
+    taken = defaultdict(list)
+    for e in entities:
+        for doc, s, end, _ in e.mentions:
+            taken[doc].append((s, end))
+    nick_of: dict[str, Entity] = {}
+    for e in entities:
+        if e.type == "PERSON" and len(e.tokens) >= 2:
+            for nick in policy.nicknames.get(e.tokens[0], []):
+                if len(nick) >= 3 and nick not in lower_words and f"{e.key}" not in nick_of.get(nick, Entity("", "", set())).key:
+                    nick_of.setdefault(nick, e)
+    for nick, target in nick_of.items():
+        key = f"PERSON:nick:{nick}>{target.key}"
+        if key in set(ops.get("deleted", [])):
+            continue
+        cand = Entity(key=key, type="PERSON", variants={LIT + nick.capitalize()}, score=0.5, sources={"nickname"})
+        for doc, text in enumerate(texts):
+            for m in re.finditer(r"(?<![\w-])(?:" + nick.capitalize() + "|" + nick.upper() + r")(?![\w-])", text):
+                if not _overlaps(m.span(), taken[doc]) and not _overlaps(m.span(), keep[doc]):
+                    cand.mentions.append((doc, m.start(), m.end(), m.group()))
+        if cand.mentions:
+            cand.nick_target = target.key
+            entities.append(cand)
+    # A nickname the language model already picked up as a lone first name ("Bob") is linked the same way.
+    for e in entities:
+        if e.type == "PERSON" and len(e.tokens) == 1 and e.tokens[0] in nick_of and not e.nick_target:
+            e.nick_target = nick_of[e.tokens[0]].key
+
     for e in entities:
         e.mentions.sort()
     entities.sort(key=lambda e: e.mentions[0][:2])
@@ -523,13 +632,61 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     # Detected entities are numbered first, manual redactions after them, so adding one by hand
     # never renumbers the pseudonyms a reviewer has already seen.
     hand = {k for k, v in manual.items() if v}  # manual entries proper (not aliases joined to an entity)
+    public_names = {" ".join(org_tokens(p)) for p in policy.public_companies}
+
+    pub_mode = settings.get("public_companies") or ("keep" if settings.get("keep_public_companies", True) else "redact")
+
+    def looks_public(e: Entity) -> bool:
+        if any(" ".join(org_tokens(m[3])) in public_names for m in e.mentions):
+            return True
+        return any(re.match(r"\.?,?\s*\((?:NASDAQ|Nasdaq|NYSE|NYSE American|OTC\w*|AMEX|LSE|TSX)\s*:\s*[A-Z.]{1,6}\)",
+                            texts[m[0]][m[2]:m[2] + 30]) for m in e.mentions)
+
+    def kept_by_policy(e: Entity) -> bool:  # kept entities don't use up a pseudonym ("Company C")
+        if e.key in hand:
+            return False
+        if e.type in disabled or (e.type == "DATE" and settings.get("date_mode") == "exact"):
+            return True
+        if e.type == "ORGANIZATION":
+            if not settings.get("redact_organizations", True):
+                return True
+            return pub_mode == "keep" and looks_public(e)
+        return False
+
     for e in [x for x in entities if x.key not in hand] + [x for x in entities if x.key in hand]:
         spec = policy.spec(e.type)
+        if e.nick_target:
+            continue  # takes its target's pseudonym, below
+        if kept_by_policy(e):
+            e.label = "Kept"
+            continue
         default = manual[e.key].get("label") if e.key in hand and manual[e.key].get("label") else (
             "Redacted {1}" if e.type == "MANUAL" else type_title(e.type) + " {1}")
         e.label = _label(spec.get("label", default), counters[e.type])
         counters[e.type] += 1
+    by_key = {e.key: e for e in entities}
+
+    # Batch-wide date handling: one random-looking but fixed offset per document set keeps every interval
+    # ("trades March 15–21, flagged March 23") while hiding the real dates.
+    date_mode = settings.get("date_mode", "month_year")
+    seed = int(hashlib.sha256("".join(texts).encode()).hexdigest()[:8], 16)
+    shift = timedelta(days=(30 + seed % 335) * (1 if seed & 1 else -1))
+    parsed = [parse_date(e.mentions[0][3]) for e in entities if e.type == "DATE"]
+    anchor = min((d for d in parsed if d), default=None)
     for e in entities:
+        if e.nick_target:
+            target = by_key.get(e.nick_target)
+            e.label = (target.label if target else "Person ?") + " (nickname?)"
+            e.canonical = e.mentions[0][3]
+            e.proposed = target.label if target else "Person ?"
+            e.custom, e.tier, e.rule = "", "review", "always_redact.person_names"
+            e.reason = (f"“{e.canonical}” is a common nickname for {target.canonical if target else 'someone'} "
+                        f"({e.proposed}). Accept to give it the same pseudonym; Keep original if it's someone else. "
+                        "Left unlinked it would either leak or become a new, false person.")
+            d = decisions.get("E|" + e.key)
+            e.status = {"accept": "accepted", "keep": "kept", "edit": "edited"}[d["action"]] if d else "pending"
+            e.custom = d.get("value", "") if d else ""
+            continue
         spec = policy.spec(e.type)
         e.rule = spec.get("rule", "")
         e.reason = spec.get("reason", "")
@@ -554,9 +711,17 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         if e.type == "DATE":
             d = parse_date(e.mentions[0][3])
             e.proposed = d.strftime("%B %Y") if d else e.label
-            if settings.get("date_mode") == "exact":
+            if date_mode == "exact":
                 e.status, e.rule, e.reason = "setting", "generalize.dates (off)", "Exact dates are kept by your policy setting."
                 continue
+            if date_mode == "shifted" and d:
+                e.proposed, e.rule = _date_like(e.mentions[0][3], d + shift), "generalize.dates (shifted)"
+                e.reason = "All dates in this set move by the same hidden offset, so intervals and order survive."
+            elif date_mode == "relative" and d and anchor:
+                e.proposed, e.rule = f"Day {(d - anchor).days}", "generalize.dates (relative)"
+                e.reason = "Dates become days counted from the earliest date in the set; order and gaps survive."
+        if e.type in ("MONEY", "SHARE_COUNT"):
+            e.proposed = round_figure(e.mentions[0][3])
         if e.type == "STREET_ADDRESS":
             m = ADDRESS_TAIL.search(e.mentions[0][3])
             if settings.get("generalize_addresses", True) and m:
@@ -565,9 +730,18 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 e.proposed, e.rule = f"[{e.label}]", "always_redact.addresses"
         if e.type == "ORGANIZATION":
             canon = " ".join(org_tokens(e.canonical))
-            if settings.get("keep_public_companies", True) and any(canon == " ".join(org_tokens(p)) for p in public):
+            if pub_mode == "keep" and looks_public(e):
                 e.status, e.rule = "public", "keep_list.public_companies"
-                e.reason = "Public companies are on the keep list while the toggle is on."
+                e.reason = "Public companies are kept while this setting is on."
+                continue
+            if pub_mode == "review" and looks_public(e):
+                e.tier, e.rule = "review", "names.public_company_party_check"
+                e.reason = ("Public company. Is it a party to this engagement (the client, a counterparty, the target)? "
+                            "If so, Accept — keeping the name reveals who hired whom. Keep original only when it is "
+                            "cited for public facts and isn't a party (e.g. “its 10-K reports 35M customers”).")
+                d = decisions.get("E|" + e.key)
+                e.status = {"accept": "accepted", "keep": "kept", "edit": "edited"}[d["action"]] if d else "pending"
+                e.custom = d.get("value", "") if d else ""
                 continue
             if not settings.get("redact_organizations", True):
                 e.status, e.rule, e.reason = "setting", "always_redact.private_organizations (off)", "Organization redaction is turned off."
@@ -594,26 +768,78 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         else:
             e.status = "auto" if e.tier == "auto" else "pending"
 
-    # 6. Flags (relationship phrases): never auto-changed.
+    # 6. Flags: never auto-changed. "match" flags cover the matched words (relationship phrases);
+    #    "sentence" flags cover the whole sentence (privilege, group inference, identifying combinations).
     flags: dict[str, Flag] = {}
     mention_spans = defaultdict(list)
     for e in entities:
-        for doc, s, end, _ in e.mentions:
-            mention_spans[doc].append((s, end))
+        for doc, s_, end, _ in e.mentions:
+            mention_spans[doc].append((s_, end))
+    locations = defaultdict(list)
+    for d in detections:
+        if d.type in ("LOCATION", "STREET_ADDRESS"):
+            locations[d.doc].append((d.start, d.end, d.text))
+
+    def anonymized(doc: int, a: int, b: int) -> str:
+        """The sentence as it currently reads in the output (entity replacements applied)."""
+        out, pos = [], a
+        for e in entities:
+            for md, ms, me, mt in e.mentions:
+                if md == doc and a <= ms and me <= b:
+                    out.append((ms, me, e.replacement_for(mt)))
+        res_, txt = [], texts[doc]
+        for ms, me, r in sorted(out):
+            res_ += [txt[pos:ms], r]
+            pos = me
+        res_.append(txt[pos:b])
+        return re.sub(r"\s+", " ", "".join(res_)).strip()
+
+    def add_flag(rule_id, doc, s_, end, replacement, reason, scope):
+        phrase = texts[doc][s_:end]
+        key = f"{rule_id}|{re.sub(r'\s+', ' ', phrase.lower())[:160]}"
+        f = flags.setdefault(key, Flag(key=key, rule=rule_id, text=re.sub(r"\s+", " ", phrase), proposed=replacement,
+                                       reason=reason, scope=scope))
+        f.mentions.append((doc, s_, end, phrase))
+
     for doc, text in enumerate(texts):
-        cands = []
+        spans = sentence_spans(text)
+        cands, sent_hits = [], {}
         for rule in (r for r in policy.flags if r.id not in disabled):
             for m in rule.regex.finditer(text):
-                s, end = m.span("v") if "v" in rule.regex.groupindex else m.span()
-                if not _overlaps((s, end), mention_spans[doc]):
-                    cands.append((s, end, rule))
+                s_, end = m.span("v") if "v" in rule.regex.groupindex else m.span()
+                if rule.scope == "sentence":
+                    sp = next(((a, b) for a, b in spans if a <= s_ < b), (s_, end))
+                    sent_hits.setdefault((rule.id, sp), rule)
+                elif not _overlaps((s_, end), mention_spans[doc]):
+                    cands.append((s_, end, rule))
         cands.sort(key=lambda c: (-(c[1] - c[0]), c[0]))
-        for s, end, rule in _greedy(cands):
-            phrase = text[s:end]
-            key = f"{rule.id}|{phrase.lower()}"
-            f = flags.setdefault(key, Flag(key=key, rule=rule.id, text=phrase, proposed=rule.replacement,
-                                           reason=rule.reason))
-            f.mentions.append((doc, s, end, phrase))
+        for s_, end, rule in _greedy(cands):
+            add_flag(rule.id, doc, s_, end, rule.replacement, rule.reason, "match")
+        for (rid, (a, b)), rule in sent_hits.items():
+            add_flag(rid, doc, a, b, rule.replacement, rule.reason, "sentence")
+
+        cats = policy.quasi.get("categories") or {}
+        if cats and "quasi.combination" not in disabled:
+            for a, b in spans:
+                sent = text[a:b]
+                found = {}
+                for cat, rxs in cats.items():
+                    for rx in rxs:
+                        m = rx.search(sent)
+                        if m:
+                            found[cat] = m.group().strip(" ,")
+                            break
+                loc = next((t for ls, le, t in locations[doc] if a <= ls and le <= b), None)
+                if loc:
+                    found["place"] = loc
+                if len(found) >= policy.quasi.get("min_categories", 3):
+                    attrs = ", ".join(f"{k} ({v})" for k, v in found.items())
+                    reason = (f"Combines {len(found)} identifying attributes — {attrs}. Together they can single out "
+                              "one person or party even with every name removed. Edit to generalize two or more "
+                              "(e.g. “a senior compliance officer at a mid-size fund who left in 2022”); "
+                              "Keep original if the combination is common.")
+                    add_flag("quasi.combination", doc, a, b, anonymized(doc, a, b), reason, "sentence")
+
     for f in flags.values():
         d = decisions.get("F|" + f.key)
         if d:
@@ -626,11 +852,20 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     for e in entities:
         for doc, s, end, orig in e.mentions:
             segments[doc].append(Segment(s, end, orig, e.replacement_for(orig), "entity", e.key, e.type, e.status))
+    covering = defaultdict(list)
     for f in flag_list:
         for doc, s, end, orig in f.mentions:
+            if f.scope == "sentence":
+                if f.status in ("accepted", "edited"):
+                    covering[doc].append(Segment(s, end, orig, f.replacement_for(orig), "flag", f.key, "FLAG", f.status))
+                continue  # an unchanged sentence flag doesn't alter the text
             segments[doc].append(Segment(s, end, orig, f.replacement_for(orig), "flag", f.key, "FLAG", f.status))
     outputs = []
     for doc, text in enumerate(texts):
+        if covering[doc]:
+            cov = _greedy([(g.start, g.end, g) for g in sorted(covering[doc], key=lambda g: -(g.end - g.start))])
+            spans_ = [(a, b) for a, b, _ in cov]
+            segments[doc] = [g for g in segments[doc] if not _overlaps((g.start, g.end), spans_)] + [g for _, _, g in cov]
         segments[doc].sort(key=lambda g: g.start)
         out, pos = [], 0
         for g in segments[doc]:
@@ -644,14 +879,19 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     items += [("F|" + f.key, f.mentions[0][:2]) for f in flag_list]
     queue = [k for k, _ in sorted(items, key=lambda x: x[1])]
 
-    return Result(names, texts, entities, flag_list, segments, outputs, queue)
+    return Result(names, texts, entities, flag_list, segments, outputs, queue, deleted_items)
 
 
 # ---------------------------------------------------------------- reports
 def redaction_log(res: Result) -> list[dict]:
     rows = []
     for e in res.entities:
-        reps = sorted({e.replacement_for(m[3]) for m in e.mentions})
+        reps_by_case: dict[str, str] = {}
+        for m in e.mentions:  # "PERSON A" (ALL-CAPS caption) and "Person A" are one replacement
+            r = e.replacement_for(m[3])
+            if r.casefold() not in reps_by_case or reps_by_case[r.casefold()].isupper():
+                reps_by_case[r.casefold()] = r
+        reps = sorted(reps_by_case.values())
         rows.append({
             "original": " | ".join(sorted({m[3] for m in e.mentions})),
             "replacement": " | ".join(reps),
@@ -663,6 +903,10 @@ def redaction_log(res: Result) -> list[dict]:
             "decision": DECISION_LABEL.get(e.status, e.status),
             "confidence": round(e.score, 2),
         })
+    for key, etype, sample in res.deleted:
+        rows.append({"original": sample, "replacement": sample, "entity_type": etype, "registry_id": "",
+                     "documents": "", "occurrences": 0, "rule": "deleted by reviewer (not an entity)",
+                     "decision": "deleted", "confidence": None})
     for f in res.flags:
         rows.append({
             "original": f.text,
@@ -676,6 +920,26 @@ def redaction_log(res: Result) -> list[dict]:
             "confidence": None,
         })
     return rows
+
+
+def release_check(res: Result, warnings: list[list[dict]] | None = None, rights_confirmed: bool = False) -> list[str]:
+    """Everything that must be true before anonymized documents leave: returns the blockers (empty = OK)."""
+    cc = consistency_check(res)
+    out = []
+    if not rights_confirmed:
+        out.append("Rights not confirmed: confirm you may share every document (and that client, patient or "
+                   "counterparty consent covers it) before release.")
+    if cc["unreviewed"]:
+        out.append(f"{len(cc['unreviewed'])} review item(s) still open.")
+    if not cc["leak_free"]:
+        out.append("Original text was found in the output — see the 'leaks' column.")
+    if not cc["all_consistent"]:
+        out.append("Some entities have more than one replacement.")
+    for name, ws in zip(res.names, warnings or []):
+        for w in ws:
+            if w.get("level") == "block":
+                out.append(f"{name}: {w['message']}")
+    return out
 
 
 def consistency_check(res: Result) -> dict:
@@ -692,6 +956,8 @@ def consistency_check(res: Result) -> dict:
             originals = {re.sub(HONORIFIC_RX, "", o) for o in originals}
             for doc, out in enumerate(res.outputs):
                 for o in originals:
+                    if o.lower() in e.replacement_for(o).lower():
+                        continue  # already coarse ("$2B" → "~$2B") — the replacement contains it on purpose
                     if len(o) >= 3 and re.search(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", out, re.IGNORECASE):
                         leaks.append(f"{o!r} in {res.names[doc]}")
         rows.append({

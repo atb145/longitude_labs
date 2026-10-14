@@ -1,0 +1,143 @@
+# General rules merged into EVERY policy pack (finance, legal, life sciences …).
+# Vertical packs add to these lists; files starting with "_" are not offered as packs.
+# Edge-case numbers refer to "Anonymization Edge Cases — Longitude Labs" (Oct 14, 2026).
+
+name: _base
+
+settings:
+  date_mode: month_year          # month_year | shifted | relative | exact   (edge case 2.3)
+  public_companies: review       # review | keep | redact                      (edge case 1.1)
+
+entities:
+  URL:
+    title: Websites and domains
+    action: redact
+    label: "Website {1}"
+    rule: always_redact.websites
+    reason: A company's own website or domain names it.
+    auto: true
+  MONEY:
+    title: Headline figures → rounded
+    action: generalize
+    label: "Amount {1}"
+    rule: generalize.figures
+    reason: Exact headline amounts are searchable in public releases; they are rounded, never noised.
+    auto: true
+  SHARE_COUNT:
+    title: Share counts → rounded
+    action: generalize
+    label: "Shares {1}"
+    rule: generalize.figures
+    reason: Exact share counts are searchable in public releases; they are rounded, never noised.
+    auto: true
+
+recognizers:
+  - entity: MONEY
+    score: 0.9
+    patterns:
+      # $4.75M · $68.7 billion · $750,000 · $95.00 per share   (tiny amounts like par values are skipped)
+      - '(?P<v>\$\s?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?:\s?(?:million|billion|thousand|[MBK]|bn|mm)\b)?|\$\s?\d+(?:\.\d+)?\s?(?:million|billion|thousand|[MBK]|bn|mm)\b|\$\s?\d{2,}(?:\.\d+)?(?=\s+per\s+share))'
+  - entity: SHARE_COUNT
+    score: 0.9
+    patterns:
+      - '(?P<v>\b\d{1,3}(?:,\d{3})+(?:\s+(?:million|billion))?\s+(?:shares|units|contracts|options))\b'
+
+keep_list:
+  terms:
+    - Press Release
+    - Investor Presentation
+    - IRS
+    - Internal Revenue Service
+  patterns:
+    # 1.2 Technical eponyms: "Kaplan-Meier curve", "Black-Scholes value", "Hodgkin lymphoma"
+    - '\b[A-Z][a-z]+(?:[-–][A-Z][a-z]+)+\s+(?:curve|estimator|model|method|test|formula|equation|value|option|options|distribution|index|ratio|plot|criterion|transform|theorem|algorithm|analysis|framework)\b'
+    - '\b[A-Z][a-z]+(?:[-–][A-Z][a-z]+)*(?:’s|''s)?\s+(?:disease|syndrome|lymphoma|sarcoma|palsy|anomaly|reflex|law)\b'
+    - '\b(?:Monte Carlo|Black-Scholes(?:-Merton)?|Kaplan-Meier|Fama-French|Cox (?:proportional|regression)|Sharpe ratio|Gini coefficient|Nash equilibrium|Pareto (?:optimal|efficient|principle)|Bayes(?:ian)?|Gaussian|Poisson|Bonferroni|Wilcoxon|Mann-Whitney|Kruskal-Wallis|Markowitz|Phillips curve|Laffer curve|Hodgkin(?:’s|''s)?)\b'
+    # Generic document furniture
+    - '\b(?:Exhibit|Item|Schedule|Annex|Appendix)\s+\d+(?:\.\d+)*[A-Z]?\b'
+
+# Words detectors confuse with names, in any vertical.
+not_entities: [Press Release, Investor Presentation, Exhibit, Exhibits, Item, Schedule, Annex, Appendix, Form,
+               Section, Rule, Act, Agreement, Registrant, Report, Current Report, Annual Report, Signatures,
+               Media Relations, Investor Relations, Overview, Summary, Background, Introduction, Conclusion,
+               State, Commission File, Zip Code, Emerging Growth Company, Common Stock, Notes]
+
+# Headline verbs and glue words that detectors attach to company names ("Microsoft Announces Partnership").
+name_noise_words: [announces, announced, reports, reported, launches, launched, acquires, acquired, completes,
+                   completed, enters, entered, signs, signed, unveils, names, appoints, files, filed, agrees,
+                   agreed, to, with, for, "on", at, as, by, partnership, agreement, acquisition, merger, deal,
+                   today, statement, update, issues, issued]
+
+# Release & rights 4.3: a first name used alone may be a nickname of someone already in the registry.
+nicknames:
+  jonathan: [jon, jack, johnny]
+  john: [jack, johnny, jon]
+  william: [bill, billy, will, liam]
+  robert: [bob, bobby, rob, robbie]
+  richard: [rick, rich, dick]
+  james: [jim, jimmy, jamie]
+  michael: [mike, mikey, mick]
+  daniel: [dan, danny]
+  david: [dave, davey]
+  joseph: [joe, joey]
+  thomas: [tom, tommy]
+  christopher: [chris, kit]
+  elizabeth: [liz, beth, betsy, lizzie, eliza]
+  katherine: [kate, kathy, katie, kat]
+  catherine: [cathy, kate, cat]
+  margaret: [maggie, peggy, meg]
+  jennifer: [jen, jenny]
+  patricia: [pat, patty, trish]
+  susan: [sue, susie]
+  alexander: [alex, sandy]
+  edward: [ed, eddie, ted, ned]
+  andrew: [andy, drew]
+  anthony: [tony]
+  benjamin: [ben, benny]
+  charles: [charlie, chuck, chas]
+  matthew: [matt]
+  nicholas: [nick, nicky]
+  samuel: [sam, sammy]
+  steven: [steve]
+  stephen: [steve]
+  timothy: [tim, timmy]
+  kenneth: [ken, kenny]
+  ronald: [ron, ronnie]
+  donald: [don, donnie]
+  gregory: [greg]
+  jeffrey: [jeff]
+  peter: [pete]
+  victoria: [vicky, tori]
+  rebecca: [becky]
+  deborah: [deb, debbie]
+
+flag_for_review:
+  # Quasi-identifiers (optional alternative): a whole group implicated without names.
+  - id: flag.group_inference
+    scope: sentence
+    pattern: '(?i)\b(?:all|both|each of the|every one of the|the entire)\s+(?:\w+\s+){0,2}(?:analysts|traders|employees|members|partners|directors|staff|nurses|physicians|associates)\s+(?:on|of|at|in)\s+the\s+(?:\w+\s+){0,3}(?:desk|team|office|group|branch|unit|ward|department)\b'
+    replacement: Several employees in one team were affected.
+    reason: The sentence implicates every member of a small, named group — each of them is identifiable without a name.
+  # Release & rights 4.2: anonymizing does not cure privilege or client confidentiality.
+  - id: rights.privileged
+    scope: sentence
+    pattern: '(?i)\b(?:attorney[- ]client|privileged(?: (?:and|&) confidential)?|work product|we (?:recommend|advise) (?:that the client )?settl\w*|(?:the |our )?client[’'']s exposure|under (?:the |a )?NDA|subject to (?:a |the )?non-disclosure|protected health information|patient (?:record|chart)s?)\b'
+    replacement: "[Withheld: possibly privileged or client-confidential]"
+    reason: >-
+      Possibly privileged or client-confidential. Anonymizing doesn't cure it — a lawyer can't waive the
+      client's confidentiality. Keep only if the rights holder consented (and say so); otherwise withhold.
+
+# Quasi-identifier combinations (2.1 rare profile, 2.2 unique role + place + event): a sentence that
+# combines several of these attributes goes to the review queue, even with every name removed.
+quasi_identifiers:
+  min_categories: 3
+  categories:
+    age: ['\b\d{1,3}[- ]year[- ]old\b', '\bage[sd]?\s+\d{1,3}\b', ',\s+\d{2},\s+(?:of|from)\b', '\bin (?:his|her|their) (?:20|30|40|50|60|70|80)s\b']
+    sex: ['\b(?:woman|man|female|male|mother|father|widow(?:er)?|girl|boy)\b']
+    role: ['(?i)\b(?:CEO|CFO|COO|CCO|CIO|CTO|chief \w+ officer|general counsel|managing (?:partner|director)|portfolio manager|head of \w+|plant manager|founder|chair(?:man|woman)?|president|treasurer|controller|analyst|trader|compliance officer|nurse|surgeon|physician)\b']
+    # Places come mainly from the language model's location tags; these add facilities and "in Boise"-style phrases.
+    place: ['\b(?:in|at|near)\s+(?:our\s+)?[A-Z][a-z]+(?:\s[A-Z][a-z]+)?(?=\s+(?:clinic|hospital|office|branch|plant|facility|campus|desk)\b|,\s+[A-Z][a-z]+\b)', '(?i)\b(?:clinic|hospital|campus|plant|facility)\b']
+    time: ['\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+(?:\d{1,2},\s+)?(?:19|20)\d{2}\b', '\b(?:19|20)\d{2}\b', '(?i)\b(?:two|three|\d+)\s+(?:days|weeks|months)\s+(?:after|before)\b']
+    event: ['(?i)\b(?:resigned|terminated|fired|dismissed|left the|retired|promoted|indicted|charged|arrested|convicted|settled|sued|exam(?:ination)?|investigation|diagnosed|treated|hospitali[sz]ed|died|placed on leave|put on leave|whistleblow\w*)\b']
+    health: ['(?i)\b(?:syndrome|disease|disorder|cancer|tumou?r|lymphoma|diagnos\w+|patient|condition|rare genetic|pregnan\w+|HIV|diabetes)\b']
+    size: ['(?i)\$\s?\d+(?:\.\d+)?\s?(?:B|M|bn|billion|million)\b', '(?i)\b\d+(?:\.\d+)?\s?(?:M|million|thousand|k)\s+(?:customers|users|employees|patients|subscribers)\b', '(?i)\bnationwide|largest|only\b']

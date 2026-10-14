@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from engine import Session, available_policies, consistency_check, load_policy, load_policy_text, redaction_log
+from engine.export import buyer_zip, internal_log_csv
 from engine.extract import SUPPORTED
 from engine.registry import norm_form, split_key, type_title
 
@@ -21,16 +22,18 @@ TYPE_NAMES = {
     "PERSON": "Person", "ORGANIZATION": "Organization", "ACCOUNT_NUMBER": "Account number",
     "CRD_NUMBER": "CRD number", "CUSIP": "CUSIP", "TICKER": "Ticker", "CASE_NUMBER": "Case / docket number",
     "EMAIL_ADDRESS": "Email", "PHONE_NUMBER": "Phone", "US_SSN": "SSN", "STREET_ADDRESS": "Street address",
-    "DATE": "Date", "FLAG": "Relationship phrase", "MANUAL": "Manual redaction",
+    "DATE": "Date", "FLAG": "Flag", "MANUAL": "Manual redaction", "MONEY": "Amount", "SHARE_COUNT": "Share count",
+    "URL": "Website", "TAX_ID": "Tax ID",
 }
 TYPE_COLORS = {  # restrained hues; used at low alpha so they read on cream and on charcoal
     "PERSON": "120,195,228", "ORGANIZATION": "205,170,120", "ACCOUNT_NUMBER": "29,181,218",
     "CRD_NUMBER": "29,181,218", "CUSIP": "150,140,200", "TICKER": "150,140,200",
     "CASE_NUMBER": "110,150,200", "EMAIL_ADDRESS": "120,180,150", "PHONE_NUMBER": "120,180,150",
     "US_SSN": "210,120,110", "STREET_ADDRESS": "190,175,130", "DATE": "150,150,150", "FLAG": "29,181,218",
-    "MANUAL": "39,39,39",
+    "MANUAL": "39,39,39", "MONEY": "160,170,90", "SHARE_COUNT": "160,170,90", "URL": "120,180,150",
+    "TAX_ID": "232,170,90",
 }
-VIEWS = ["Review", "Documents", "Approved", "Log & consistency"]
+VIEWS = ["Start", "Review", "Documents", "Final"]
 
 st.set_page_config(page_title="Longitude Anonymizer", page_icon="◐", layout="wide",
                    initial_sidebar_state="expanded")
@@ -52,6 +55,8 @@ def inject_css() -> None:
 
     .ll-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:.4rem; }
     .ll-word { font-family:var(--serif); font-size:1.35rem; font-weight:500; }
+    [data-testid="stSidebar"] { min-width: 300px; }
+    @media (max-width: 640px) { .ll-coord { display:none; } .ll-word { font-size:1.15rem; } }
     .ll-word .dim { color:var(--dim); font-family:var(--sans); font-size:.85rem; font-weight:400; margin-left:.3rem; }
     .ll-coord { font-size:.8rem; color:var(--dim); padding:.25rem .8rem; border:1px solid var(--rule); border-radius:999px; }
     .wave { display:block; width:100%; height:18px; color:var(--soft); margin:.2rem 0 2rem; }
@@ -119,6 +124,9 @@ def inject_css() -> None:
                   padding:.3rem .8rem; border:1px solid #272727; background:#272727; color:#F7F3EA; box-shadow:0 2px 8px rgba(0,0,0,.18); }
     .edit-hint { font-size:.85rem; color:var(--dim); margin:-.2rem 0 .6rem; }
     .st-key-prev_doc button, .st-key-next_doc button { padding:.45rem 0 !important; min-width:0; font-size:1rem; }
+    .gate { border:1px solid color-mix(in srgb, #c27a1a 45%, transparent); border-radius:.8rem; padding:.7rem 1rem;
+            margin:.8rem 0; font-size:.9rem; }
+    .gate ul { margin:.3rem 0 0 1.1rem; padding:0; } .gate li { margin:.15rem 0; color:var(--dim); }
     .count-top { font-size:.85rem; color:var(--dim); margin:0 0 .15rem; }
     .count-top b { color:var(--fg); font-weight:500; }
     .doc-count b { color:var(--fg); }
@@ -168,21 +176,22 @@ def label(text: str, accent: str = "") -> None:
 
 def header() -> None:
     sess = st.session_state.get("session")
-    coord = (f"{len(sess.names)} documents · {sess.policy.name} policy" if sess else "Prototype")
+    coord = f'<span class="ll-coord">{len(sess.names)} documents · {html.escape(sess.policy.name)} policy</span>' if sess else ""
     st.markdown(f'<div class="ll-head"><span class="ll-word">Longitude Anonymizer <span class="dim">— prototype</span></span>'
-                f'<span class="ll-coord">{coord}</span></div>{WAVE}', unsafe_allow_html=True)
+                f'{coord}</div>{WAVE}', unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------- state helpers
-def start_session(files: list[tuple[str, bytes]], policy) -> None:
+def start_session(files: list[tuple[str, bytes]], policy, rights: bool = False) -> None:
     with st.spinner("Reading documents and detecting entities…"):
         st.session_state.session = Session.from_files(files, policy)
+        st.session_state.session.rights_confirmed = rights
     st.session_state.view = "Review"
     st.session_state.editing = False
 
 
 def reset() -> None:
-    for k in [k for k in st.session_state if k.startswith(("b_", "t_"))] + ["session", "view", "editing", "focus", "edit_mode", "doc_pick", "last_action"]:
+    for k in [k for k in st.session_state if k.startswith(("b_", "t_"))] + ["session", "view", "editing", "focus", "edit_mode", "doc_pick", "last_action", "rights_ok"]:
         st.session_state.pop(k, None)
 
 
@@ -211,6 +220,15 @@ def examples(e, k: int = 3) -> str:
         if f not in seen:
             seen.append(f)
     return ", ".join(seen[:k]) + ("…" if len(seen) > k else "")
+
+
+def delete_entity(sess: Session, ent) -> None:
+    if ent.rule == "manual":
+        sess.unredact(ent.key)
+    else:
+        sess.delete(ent.key)
+    st.session_state.focus_note = f"Deleted “{ent.canonical}” — it's no longer treated as an entity"
+    st.session_state.editing = False
 
 
 def merge_into(sess: Session, src, dst) -> None:
@@ -360,15 +378,21 @@ def home() -> None:
     label("Documents")
     uploads = st.file_uploader("Documents", type=[s.strip(".") for s in SUPPORTED], accept_multiple_files=True,
                                label_visibility="collapsed")
+    rights = st.checkbox(
+        "I have the right to share these documents. Consent covers everyone whose rights are involved — my client, "
+        "patients, counterparties — and nothing here is privileged or under an NDA without their consent.",
+        key="rights_ok")
+    st.caption("Anonymizing doesn't cure privilege or confidentiality: if you can't tick this, don't upload the file.")
     c1, c2, _ = st.columns([1.2, 1.3, 2])
-    if c1.button("Anonymize my files", type="primary", disabled=not uploads, width="stretch"):
+    if c1.button("Anonymize my files", type="primary", disabled=not (uploads and rights), width="stretch"):
         try:
-            start_session([(u.name, u.getvalue()) for u in uploads], pol)
+            start_session([(u.name, u.getvalue()) for u in uploads], pol, rights)
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
     if c2.button("Try with sample case", width="stretch"):
-        start_session([(p.name, p.read_bytes()) for p in sorted(SAMPLES.glob("*")) if p.suffix in SUPPORTED], pol)
+        start_session([(p.name, p.read_bytes()) for p in sorted(SAMPLES.glob("*")) if p.suffix in SUPPORTED], pol,
+                      rights=True)  # fictional placeholder documents
         st.rerun()
     st.markdown('<p class="ll-note" style="margin-top:1rem">The sample case is three short documents from one '
                 'enforcement matter: a complaint, a staff memo and a settlement order.</p>', unsafe_allow_html=True)
@@ -426,12 +450,19 @@ def sidebar(sess: Session, res) -> None:
         s["disabled"] = disabled
 
         label("Options")
-        st.session_state.setdefault("t_public", s.get("keep_public_companies", True))
+        date_modes = {"month_year": "Month + year (March 2022)", "shifted": "Shifted — same gaps, hidden offset",
+                      "relative": "Relative — Day 0, Day 6…", "exact": "Exact (no change)"}
+        st.session_state.setdefault("t_dates", s.get("date_mode", "month_year"))
+        st.selectbox("Dates", list(date_modes), key="t_dates", format_func=date_modes.get,
+                     help="Shifted and relative keep the order and spacing of events (e.g. trades before an alert).")
+        pub_modes = {"review": "Ask if it's a party (review)", "keep": "Always keep", "redact": "Always redact"}
+        st.session_state.setdefault("t_pub", s.get("public_companies", "review"))
+        st.selectbox("Public companies", list(pub_modes), key="t_pub", format_func=pub_modes.get,
+                     help="Keeping a public company's name is only safe when it isn't the client or a counterparty.")
         st.session_state.setdefault("t_addr", s.get("generalize_addresses", True))
-        st.toggle("Keep public companies", key="t_public",
-                  help="Large listed firms on the pack's public_companies list stay readable.")
         st.toggle("Addresses → city, state", key="t_addr", help="Off: the whole address becomes a placeholder.")
-        s["keep_public_companies"] = st.session_state.t_public
+        s["date_mode"] = st.session_state.t_dates
+        s["public_companies"] = st.session_state.t_pub
         s["generalize_addresses"] = st.session_state.t_addr
 
         label("Entities", f"{len(res.entities)}")
@@ -462,9 +493,62 @@ def sidebar(sess: Session, res) -> None:
                             tgt = st.selectbox("Merge into", list(names), key=f"mv-{e.key}", format_func=names.get)
                             st.button("Merge", key=f"mb-{e.key}", on_click=merge_into, width="stretch",
                                       args=(sess, e, next(o for o in others if o.key == tgt)))
+                        st.markdown('<p class="ll-sub">Not an entity?</p>', unsafe_allow_html=True)
+                        st.button("🗑 Delete entity", key=f"del-{e.key}", on_click=delete_entity, args=(sess, e),
+                                  width="stretch", help="Removes a false detection (e.g. a heading); its text stays "
+                                  "as written and the log records the deletion.")
         st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
         st.button("Start over", on_click=reset, width="stretch")
         st.caption("Light / dark: ⋮ menu → Settings → Theme.")
+
+
+# --------------------------------------------------------------------------- adding documents / start
+def add_documents_form(sess: Session, key: str) -> None:
+    """Upload more files into the current set (same registry, so pseudonyms stay consistent)."""
+    ups = st.file_uploader("Add documents", type=[x.strip(".") for x in SUPPORTED], accept_multiple_files=True,
+                           key=f"{key}_files", label_visibility="collapsed")
+    ok = st.checkbox("I have the right to share these documents too (client, patient and counterparty consent "
+                     "included; nothing privileged or under NDA without consent).", key=f"{key}_rights")
+    if st.button("Add to this set", type="primary", disabled=not (ups and ok), key=f"{key}_go"):
+        before = len(sess.run().queue)
+        with st.spinner("Reading and detecting…"):
+            try:
+                added = sess.add_files([(u.name, u.getvalue()) for u in ups])
+            except ValueError as exc:
+                st.error(str(exc))
+                return
+        new_items = len(sess.run().queue) - before
+        st.session_state.focus_note = (f"Added {len(added)} document{'s' if len(added) != 1 else ''}"
+                                       + (f" — {new_items} new item{'s' if new_items != 1 else ''} to review"
+                                          if new_items > 0 else ""))
+        st.session_state.pop(f"{key}_files", None)
+        st.rerun()
+
+
+@st.dialog("Add documents", width="large")
+def add_documents_dialog(sess: Session) -> None:
+    st.caption("New files join this set: anyone already in the registry keeps their pseudonym, and earlier "
+               "decisions still apply. New findings join the review queue.")
+    add_documents_form(sess, "dlg_add")
+
+
+def start_view(sess: Session, res) -> None:
+    """Step 1 while a set is open: what's in it, add more, or start again."""
+    st.markdown('<h2>Your document set</h2>', unsafe_allow_html=True)
+    rows = [{"document": name, "status": ("✓ approved" if is_current(sess, res, i) else
+                                          "changed since approval" if i in sess.approved else "in progress"),
+             "redactions": len(res.segments[i]),
+             "notes": "; ".join(w["message"] for w in (sess.warnings[i] if i < len(sess.warnings) else []))}
+            for i, name in enumerate(res.names)]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    c1, c2, _ = st.columns([1.4, 1.2, 2])
+    c1.button("Continue reviewing →", type="primary", width="stretch",
+              on_click=lambda: st.session_state.update(view="Review"))
+    c2.button("Start a new set", width="stretch", on_click=reset,
+              help="Clears this set and every decision — download what you need first.")
+    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+    label("Add documents to this set")
+    add_documents_form(sess, "start_add")
 
 
 # --------------------------------------------------------------------------- review
@@ -489,14 +573,20 @@ def review(sess: Session, res) -> None:
     pending = [k for k in queue if res.item(k).status == "pending"]
     bearing(len(queue) - len(pending), len(queue))
 
+    if st.button("＋ Add documents", key="rv_add", help="Upload more files into this set"):
+        add_documents_dialog(sess)
+
     if not pending:
         st.markdown('<h2>Everything is reviewed</h2>', unsafe_allow_html=True)
         st.markdown(f'<p class="ll-note">{sum(e.status == "auto" for e in res.entities)} high-confidence detections '
-                    'were applied automatically. Open Documents to read the result.</p>', unsafe_allow_html=True)
-        c1, c2, _ = st.columns([1, 1, 2])
-        c1.button("Back", on_click=undo, disabled=not sess.ops["history"], width="stretch")
-        c2.button("Open documents", type="primary", width="stretch",
+                    'were applied automatically. Next: read each document side by side and approve it.</p>',
+                    unsafe_allow_html=True)
+        c1, c2, c3, _ = st.columns([1.5, 1.3, .8, 1.4])
+        c1.button("Continue to documents →", type="primary", width="stretch",
                   on_click=lambda: st.session_state.update(view="Documents"))
+        if c2.button("＋ Add documents", width="stretch", key="rv_add_done"):
+            add_documents_dialog(sess)
+        c3.button("Back", on_click=undo, disabled=not sess.ops["history"], width="stretch")
         return
 
     key = pending[0]
@@ -504,14 +594,25 @@ def review(sess: Session, res) -> None:
     is_flag = key.startswith("F|")
     doc, s, e, _ = item.mentions[0]
     docs = sorted({m[0] for m in item.mentions})
-    etype = "Relationship phrase · flagged" if is_flag else f"{type_name(item.type)} · low confidence"
+    flag_kinds = {"quasi.combination": "Identifying combination", "rights.privileged": "Possibly privileged",
+                  "flag.group_inference": "Group inference", "flag.family_relationship": "Relationship phrase",
+                  "flag.role_at_named_entity": "Role at a named entity"}
+    if is_flag:
+        etype = f"{flag_kinds.get(item.rule, 'Flag')} · review"
+    elif item.rule == "names.public_company_party_check":
+        etype = "Public company · is it a party?"
+    elif getattr(item, "nick_target", ""):
+        etype = "Possible nickname"
+    else:
+        etype = f"{type_name(item.type)} · low confidence"
     n = len(item.mentions)
     st.markdown(
         f'<div class="card"><div class="card-top"><span class="card-type">{etype}</span>'
         f'<span class="dim">{html.escape(res.names[doc])} · first of {n} occurrence{"s" if n != 1 else ""}</span></div>'
         f'<div class="card-ctx">{context_html(res, doc, s, e)}</div>'
         '<dl class="kv">'
-        f'<dt>Found</dt><dd class="big">{html.escape(item.text if is_flag else item.canonical)}</dd>'
+        + ("" if is_flag and getattr(item, "scope", "") == "sentence" else
+           f'<dt>Found</dt><dd class="big">{html.escape(item.text if is_flag else item.canonical)}</dd>') +
         f'<dt>Proposed</dt><dd class="big">{html.escape(item.proposed)}</dd>'
         f'<dt>Why</dt><dd>{html.escape(item.reason)} <span class="rule-id">Rule: {html.escape(item.rule)}</span></dd>'
         f'<dt>Applies to</dt><dd>{n} occurrence{"s" if n != 1 else ""} in '
@@ -686,24 +787,13 @@ export default function (component) {
 doc_panes = st.components.v2.component("doc_panes", js=DOC_JS, isolate_styles=False)
 
 
-def zip_outputs(names: list[str], outputs: list[str], res, only: list[str] | None = None) -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, out in zip(names, outputs):
-            zf.writestr(f"{Path(name).stem}.anonymized.txt", out)
-        zf.writestr("redaction_log.csv", log_csv(res, only))
-    return buf.getvalue()
-
-
-def log_csv(res, only: list[str] | None = None) -> str:
-    rows = redaction_log(res)
-    if only:
-        rows = [r for r in rows if any(n in r["documents"] for n in only)]
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()) if rows else ["original"])
-    w.writeheader()
-    w.writerows(rows)
-    return buf.getvalue()
+def release_box(sess: Session, res) -> list[str]:
+    """Release gate: downloads stay off until every check passes."""
+    blockers = sess.release_blockers(res)
+    if blockers:
+        st.markdown('<div class="gate"><b>Downloads unlock when these are done</b><ul>'
+                    + "".join(f"<li>{html.escape(b)}</li>" for b in blockers) + "</ul></div>", unsafe_allow_html=True)
+    return blockers
 
 
 def short(name: str, n: int = 26) -> str:
@@ -778,8 +868,8 @@ def edit_dialog(sess: Session, res, ref: str) -> None:
     if c2.button("Keep original", width="stretch"):
         sess.decide(ref, "keep")
         st.rerun()
-    if not is_flag and item.rule == "manual" and c3.button("Remove redaction", width="stretch"):
-        sess.unredact(item.key)
+    if not is_flag and c3.button("🗑 Delete entity", width="stretch", help="Not an entity: leave the text as written."):
+        delete_entity(sess, item)
         st.rerun()
     if not is_flag:
         with st.expander("Split a form off into another entry"):
@@ -804,17 +894,19 @@ def documents(sess: Session, res) -> None:
 
     st.markdown(f'<p class="count-top"><b>{approved}/{n}</b> approved</p><p class="ll-label">Documents</p>',
                 unsafe_allow_html=True)
-    d1, d2, d3, d4 = st.columns([4.6, .55, .55, 1.7], vertical_alignment="bottom")
+    d1, d2, d3, d4, d5 = st.columns([4.2, .55, .55, 1.6, 1.45], vertical_alignment="bottom")
     # A dropdown scales to large sets (type to search); ✓ marks approved documents.
     doc = d1.selectbox("Document", list(range(n)), key="doc_pick", label_visibility="collapsed",
                        format_func=lambda i: f"{'✓ ' if is_current(sess, res, i) else ''}{res.names[i]}")
     d2.button("←", on_click=step, args=(-1,), help="Previous document", width="stretch", key="prev_doc")
     d3.button("→", on_click=step, args=(1,), help="Next document", width="stretch", key="next_doc")
     d4.button("Next to approve", on_click=next_unapproved, disabled=approved == n, width="stretch")
+    if d5.button("＋ Add documents", width="stretch", key="doc_add"):
+        add_documents_dialog(sess)
 
     edit = st.session_state.get("edit_mode", False)
     options = [(i, v) for i in range(n) for v in ("original", "anonymized")]
-    fmt = lambda o: f"{short(res.names[o[0]])} · {o[1]}"
+    fmt = lambda o: f"{o[1].capitalize()} · {short(res.names[o[0]], 22)}"
     c1, c2, c3, c4 = st.columns([1.55, 1.75, 1.75, 1.45], vertical_alignment="bottom")
     layout = c1.segmented_control("Layout", ["Side by side", "Single"], default="Side by side", key="doc_layout")
     if layout == "Single":
@@ -832,6 +924,9 @@ def documents(sess: Session, res) -> None:
         f'<span><span class="chip t-{color_type(t)}">&nbsp;</span> {type_name(t)}</span>' for t in present)
         + '<span>Hover any highlight to see the other version. Dashed = not reviewed yet.</span></div>',
         unsafe_allow_html=True)
+    for w in (sess.warnings[doc] if sess.warnings and doc < len(sess.warnings) else []):
+        (st.error if w["level"] == "block" else st.caption)(("Blocks release — " if w["level"] == "block" else "Note: ")
+                                                            + w["message"])
     if edit:
         st.markdown('<p class="edit-hint">Editing: select any text to redact it, or click ✎ next to a placeholder '
                     'to change or remove it.</p>', unsafe_allow_html=True)
@@ -869,15 +964,27 @@ def documents(sess: Session, res) -> None:
         a1.button("✓ Approved · undo", width="stretch", key=f"unapprove_{doc}",
                   on_click=lambda: sess.unapprove(doc), help="Move this document back out of the final stage.")
     else:
-        if a1.button("✓ Approve new version" if stale else "✓ Approve document", type="primary", width="stretch",
-                     key=f"approve_{doc}"):
+        def approve_and_advance() -> None:
             sess.approve(doc, res)
-            st.session_state.focus_note = f"Approved {res.names[doc]} — it's in the final stage"
-            st.rerun()
+            todo = [i for i in list(range(doc + 1, n)) + list(range(doc)) if not is_current(sess, res, i)]
+            if todo:
+                st.session_state.doc_pick = todo[0]
+                st.session_state.focus_note = f"Approved {res.names[doc]} — next: {res.names[todo[0]]}"
+            else:
+                st.session_state.focus_note = "Every document is approved — the final package is ready"
+
+        a1.button("✓ Approve new version" if stale else "✓ Approve document", type="primary", width="stretch",
+                  key=f"approve_{doc}", on_click=approve_and_advance)
+    blocked = bool(sess.release_blockers(res))
     a2.download_button("Download this document", res.outputs[doc], f"{Path(res.names[doc]).stem}.anonymized.txt",
-                       "text/plain", width="stretch")
-    a3.download_button("Download all (.zip)", zip_outputs(res.names, res.outputs, res), "anonymized_documents.zip",
-                       "application/zip", type="primary", width="stretch")
+                       "text/plain", width="stretch", disabled=blocked)
+    a3.download_button("Download all (.zip)", buyer_zip(res.names, res.outputs), "anonymized_documents.zip",
+                       "application/zip", type="primary", width="stretch", disabled=blocked)
+    release_box(sess, res)
+    if approved == n:
+        st.success("Every document is approved.")
+        st.button("Go to the final package →", type="primary", key="to_final",
+                  on_click=lambda: st.session_state.update(view="Final"))
     if stale:
         st.warning("This document changed after you approved it. Approve the new version to update the final "
                    "stage; until then it keeps the version you approved.")
@@ -890,36 +997,63 @@ def documents(sess: Session, res) -> None:
                      hide_index=True, width="stretch")
 
 
-def approved_view(sess: Session, res) -> None:
+def final_view(sess: Session, res) -> None:
+    """Step 4: everything compiled — progress, release check, the approved package, and the audit trail."""
     n = len(res.names)
     items = sorted(sess.approved.items())
-    st.markdown(f'<p class="count-top"><b>{len(items)}/{n}</b> approved</p><h2>Final stage</h2>'
-                f'<p class="ll-note">Approved documents are stored here as the exact version you approved.</p>',
-                unsafe_allow_html=True)
+    cc = consistency_check(res)
+    reviewed = len(res.queue) - len(cc["unreviewed"])
+    current = sum(is_current(sess, res, i) for i in range(n))
+    st.markdown('<h2>Final package</h2>', unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Documents approved", f"{current}/{n}")
+    m2.metric("Review items done", f"{reviewed}/{len(res.queue)}")
+    m3.metric("Entities", len(res.entities), help="Each has one pseudonym across every document.")
+    m4.metric("Leaks found", 0 if cc["leak_free"] else sum(bool(r["leaks"]) for r in cc["rows"]))
+    todo = [i for i in range(n) if not is_current(sess, res, i)]
+    if todo:
+        st.markdown(f'<p class="ll-note">Still to approve: {html.escape(", ".join(res.names[i] for i in todo))}. '
+                    'Only approved documents go into the package.</p>', unsafe_allow_html=True)
+        st.button("Approve the rest in Documents →", key="final_to_docs",
+                  on_click=lambda: st.session_state.update(view="Documents", doc_pick=todo[0]))
     if not items:
-        st.info("Nothing approved yet. Open Documents and tick the check-mark at the bottom of a document.")
+        st.info("Nothing approved yet. Open Documents and press ✓ Approve document under each one.")
+        st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+        audit_trail(sess, res)
         return
+    blocked = bool(release_box(sess, res))
+    names = [res.names[d] for d, _ in items]
+    outputs = [a["output"] for _, a in items]
+    combined = "\n\n".join(f"{'=' * 72}\n{name}\n{'=' * 72}\n\n{out}" for name, out in zip(names, outputs))
+    c1, c2, _ = st.columns([1.6, 1.6, 1.2])
+    c1.download_button(f"Download package (.zip, {len(items)})", buyer_zip(names, outputs), "anonymized_package.zip",
+                       "application/zip", type="primary", disabled=blocked, width="stretch")
+    c2.download_button("Download as one combined file", combined, "anonymized_package.txt", "text/plain",
+                       disabled=blocked, width="stretch")
+    st.caption("Documents only. The mapping key (redaction log) stays internal — see the audit trail below.")
+    with st.expander("Preview the compiled package"):
+        st.markdown(f'<div class="doc" style="max-height:460px;overflow:auto">{html.escape(combined)}</div>',
+                    unsafe_allow_html=True)
+    label("Approved documents")
     rows = [{"document": res.names[d], "approved": a["at"], "redactions": a["changes"],
              "status": "current" if a["output"] == res.outputs[d] else "changed since approval"} for d, a in items]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    names = [res.names[d] for d, _ in items]
-    outputs = [a["output"] for _, a in items]
-    st.download_button(f"Download approved documents (.zip, {len(items)})", zip_outputs(names, outputs, res, names),
-                       "approved_documents.zip", "application/zip", type="primary")
     for d, a in items:
         with st.expander(f"✓ {res.names[d]} — approved {a['at']}"):
             c1, c2, _ = st.columns([1.4, 1, 2])
             c1.download_button("Download", a["output"], f"{Path(res.names[d]).stem}.anonymized.txt", "text/plain",
-                               key=f"dl_appr_{d}", width="stretch")
+                               key=f"dl_appr_{d}", width="stretch", disabled=bool(blocked))
             if c2.button("Move back", key=f"unappr_{d}", width="stretch"):
                 sess.unapprove(d)
                 st.rerun()
             st.markdown(f'<div class="doc" style="max-height:340px;overflow:auto">{html.escape(a["output"])}</div>',
                         unsafe_allow_html=True)
+    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+    audit_trail(sess, res)
 
 
 # --------------------------------------------------------------------------- log & consistency
-def log_view(sess: Session, res) -> None:
+def audit_trail(sess: Session, res) -> None:
     cc = consistency_check(res)
     label("Consistency check")
     n = len(cc["rows"])
@@ -935,16 +1069,21 @@ def log_view(sess: Session, res) -> None:
         f'<span class="{"ok" if ok else "warn"}">{"✓" if ok else "!"}</span>&nbsp; {html.escape(t)}' for ok, t in lines)
         + "</div>", unsafe_allow_html=True)
     if cc["unreviewed"]:
-        for k in cc["unreviewed"]:
-            it = res.item(k)
-            st.markdown(f"<span class='mono dim'>· {html.escape(it.text if k.startswith('F|') else it.canonical)}"
-                        f" → {html.escape(it.proposed)}</span>", unsafe_allow_html=True)
+        with st.expander(f"Show the {len(cc['unreviewed'])} unreviewed item(s)"):
+            st.markdown("".join(
+                f'<div class="form-row"><span class="form">'
+                f'{html.escape(res.item(k).text if k.startswith("F|") else res.item(k).canonical)}</span>'
+                f' → {html.escape(res.item(k).proposed)}</div>' for k in cc["unreviewed"]), unsafe_allow_html=True)
     st.dataframe(pd.DataFrame(cc["rows"]), hide_index=True, width="stretch")
 
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
-    label("Redaction log")
+    label("Redaction log · internal")
+    st.markdown('<p class="ll-note">This is the mapping key (original → replacement). While it exists the output is '
+                '<b>pseudonymized, not anonymized</b>: keep it internal and access-controlled, and never send it with '
+                'the documents. Download ZIPs never include it.</p>', unsafe_allow_html=True)
     st.dataframe(pd.DataFrame(redaction_log(res)), hide_index=True, width="stretch")
-    st.download_button("Download redaction log (.csv)", log_csv(res), "redaction_log.csv", "text/csv", type="primary")
+    st.download_button("Download internal mapping key (.csv)", internal_log_csv(res), "INTERNAL_redaction_key.csv",
+                       "text/csv")
 
 
 # --------------------------------------------------------------------------- main
@@ -960,9 +1099,14 @@ else:
     if st.session_state.get("focus_note"):
         st.toast(st.session_state.pop("focus_note"))
     n_ok = sum(is_current(sess, res, i) for i in range(len(res.names)))
-    labels = {"Review": "Review", "Documents": f"Documents {n_ok}/{len(res.names)}",
-              "Approved": f"✓ Approved ({len(sess.approved)})", "Log & consistency": "Log & consistency"}
-    view = st.segmented_control("View", VIEWS, key="view", format_func=labels.get,
+    open_items = sum(res.item(k).status == "pending" for k in res.queue)
+    if st.session_state.get("view") not in VIEWS:
+        st.session_state.view = "Review"
+    labels = {"Start": "① Start",
+              "Review": "② Review" + (f" · {open_items} open" if open_items else " ✓"),
+              "Documents": f"③ Documents · {n_ok}/{len(res.names)}",
+              "Final": "④ Final" + (" ✓" if n_ok == len(res.names) else "")}
+    view = st.segmented_control("Step", VIEWS, key="view", format_func=labels.get,
                                 label_visibility="collapsed") or "Review"
     st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
-    {"Review": review, "Documents": documents, "Approved": approved_view, "Log & consistency": log_view}[view](sess, res)
+    {"Start": start_view, "Review": review, "Documents": documents, "Final": final_view}[view](sess, res)
