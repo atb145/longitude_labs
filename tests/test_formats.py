@@ -87,7 +87,7 @@ def outputs(name, data):
 def test_8k_every_format(fmt):
     s, res, out = outputs(*MSFT_FORMATS[fmt])
     for leak in ("Microsoft", "MICROSOFT", "Activision", "Dolliver", "91-1144442", "001-37845", "882-8080",
-                 "microsoft.com", "$68.7 billion"):
+                 "microsoft.com", "$68.7 billion", "MSFT", "$0.00000625", "$95.00"):
         assert leak not in out, f"{fmt}: {leak} leaked"
     for keep in ("Securities Exchange Act of 1934", "Rule 425"):
         assert keep in " ".join(out.split()), f"{fmt}: {keep} was removed"

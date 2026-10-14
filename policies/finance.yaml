@@ -62,6 +62,13 @@ entities:
     rule: always_redact.security_identifiers
     reason: Pins down the security traded.
     auto: true
+  SHARE_PRICE:
+    title: Stock and share prices
+    action: redact
+    label: "Price {1}"
+    rule: always_redact.share_prices
+    reason: A share price dates and identifies the security.
+    auto: true
   TICKER:
     title: Tickers
     action: redact
@@ -154,7 +161,6 @@ keep_list:
     - '\b(?:Rule|Regulation|Form|Section|Item)\s+\d+[\w.()-]*(?:\s+(?:under|of)\s+the\s+(?:Securities|Exchange|Investment)[\w ]+Act(?:\s+of\s+\d{4})?)?'
     - '\b(?:Securities|Securities Exchange|Investment Advisers|Investment Company|Sarbanes-Oxley|Dodd-Frank)(?:\s+[A-Z][a-z]+)*\s+Act(?:\s+of\s+\d{4})?'
     - '\bRegulation\s+(?:FD|S-K|S-X|M|SHO|D|A|BI)\b'
-    - '(?<![@\w.])(?:https?://)?(?:www\.)?sec\.gov/\S*'
     # The regulator's own address block is public.
     - '100 F Street,? N\.?E\.?(?:,?\s+Washington,?\s+D\.?C\.?\s+20549)?'
     - 'Washington,?\s+D\.?C\.?\s+20549'
@@ -173,6 +179,17 @@ not_entities: [CRD, CRD No, CFO, CEO, COO, CCO, SSN, EIN, CUSIP, MNPI, ATS, Comm
 name_noise_words: [defendant, defendants, plaintiff, relief, respondent, against, former, another, sold, bought,
                    misappropriate, misappropriated, through, via, from, to, by, the, a, an, each, both, certain,
                    other, its, his, her, their, including, and, or, of, pre-ipo, pursuant, between, with]
+
+# Ticker lookup: every symbol on the SEC's company_tickers list (ticker → registrant name). A bare "MSFT" is
+# redacted, and the company it stands for ("MICROSOFT CORP") is treated as a party too.
+ticker_list: data/sec_tickers.tsv
+ticker_stopwords: [SEC, CEO, CFO, COO, CCO, CIO, CTO, LLC, LLP, USA, USD, NASDAQ, NYSE, FINRA, IRS, FBI, DOJ, ETF, IPO,
+                   EPS, GAAP, IFRS, ESG, ESOP, EDGAR, CIK, EIN, SSN, CUSIP, ISIN, CRD, FORM, ITEM, NOTE, NOTES, ACT,
+                   "TRUE", "FALSE", PDF, HTML, XBRL, AND, THE, INC, CORP, LTD, FUND, BANK, NEW, YORK, "ON", IT, ALL, ARE,
+                   NOW, SO, GO, CAN, FOR, AN, AM, DE, PM, ET, BE, OR, IS, AT, HE, MY, BY, US, AI, OK, TV, ID, LP,
+                   # company suffixes ("PlayStar Gaming Group AB", "Meyer Global GP") and SEC form names (Form ADV)
+                   AB, AG, SA, NV, BV, SE, AS, OY, KK, GP, PLC, LLC, SPA, GMBH, CO, PC, PA, NA, FSB, ADR, ADS, REIT,
+                   SPAC, ADV, PPP, IRA, CPA, CFA, CFP, MD, DC, NY, CA, TX, FL]
 
 public_companies:
   - JPMorgan Chase
@@ -199,6 +216,13 @@ recognizers:
     score: 0.95
     patterns:
       - '(?i)\bCUSIP\s*(?:No\.?|#)?\s*:?\s*(?P<v>[0-9]{3}[0-9A-Z]{5}[0-9])\b'
+  - entity: SHARE_PRICE
+    score: 0.95
+    patterns:
+      # "$0.00000625 par value per share" · "$95.00 per share" · "closing price of $312.45" · "priced at $18"
+      - '(?P<v>\$\s?\d[\d,]*(?:\.\d+)?)(?=\s*(?:per\s+(?:share|unit|ADS)|a\s+share|/share|par\s+value))'
+      - '(?i:(?:share|stock|closing|opening|exercise|strike|offer(?:ing)?|purchase|sale|conversion|subscription|IPO|deal|tender|bid)\s+price\s+(?:of\s+|was\s+|at\s+|is\s+)?(?:approximately\s+|about\s+)?)(?P<v>\$?\s?\d[\d,]*(?:\.\d+)?)'
+      - '(?i:(?:priced|closed|trading|traded|opened)\s+at\s+)(?P<v>\$\s?\d[\d,]*(?:\.\d+)?)'
   - entity: TICKER
     score: 0.9
     patterns:

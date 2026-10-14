@@ -328,6 +328,9 @@ def _greedy(cands: list[tuple]) -> list[tuple]:
 
 def _clean_name(d: Detection, policy: Policy, lower_words: set[str]) -> Detection | None:
     """Trim words detectors glue onto names ("Defendants Meyer Global LLC", "Company A wired")."""
+    if d.type == "URL":  # a sentence's full stop or comma isn't part of the link
+        text = d.text.rstrip(".,;:!?)]”\"'")
+        return Detection(d.doc, d.start, d.start + len(text), text, d.type, d.score, d.source) if text else None
     if d.type not in ("PERSON", "ORGANIZATION"):
         return d
     if re.sub(r"\s+", " ", _strip_possessive(d.text)).strip("“”\"").lower() in policy.not_entities:
@@ -422,6 +425,26 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     usable = [d for d in usable if not (d.type == "ORGANIZATION" and d.source == "SpacyRecognizer"
                                         and (" ".join(org_tokens(d.text)) in owned
                                              or org_tokens(d.text)[:1] and org_tokens(d.text)[0].rstrip("’'s") in person_words))]
+    # Ticker lookup (SEC company_tickers list): a bare "MSFT" is a ticker unless it's an ordinary word here,
+    # a common acronym, or part of an all-caps heading (exchange names next to it are fine: "MSFT NASDAQ").
+    if policy.tickers:
+        exchanges = {"NASDAQ", "NYSE", "AMEX", "OTC", "NYSEARCA", "CBOE", "ARCA", "LSE", "TSX"}
+        keep_upper = {k.upper() for k in policy.keep_terms}
+        for doc, text in enumerate(texts):
+            for m in re.finditer(r"(?<![\w$.@/-])([A-Z]{2,5})(?![\w-])", text):
+                t = m.group(1)
+                if (t not in policy.tickers or t in policy.ticker_stopwords or t.lower() in lower_words
+                        or re.fullmatch(r"[IVXLCDM]+", t)                                   # roman numerals
+                        or re.search(r"(?i)\b(?:a|an|the)\s+$", text[max(0, m.start() - 5):m.start()])
+                        and re.match(r"\s+[a-z]", text[m.end():m.end() + 3])                  # "a UPS box"
+                        or t.lower() in policy.not_entities or t in keep_upper or _overlaps(m.span(), keep[doc])):
+                    continue
+                near = (re.findall(r"[A-Za-z]{2,}", text[max(0, m.start() - 40):m.start()])[-1:]
+                        + re.findall(r"[A-Za-z]{2,}", text[m.end():m.end() + 40])[:1])
+                if any(w.isupper() and w not in exchanges for w in near) and not any(w in exchanges for w in near):
+                    continue  # inside a heading like "UNITED STATES DISTRICT COURT"
+                usable.append(Detection(doc, m.start(), m.end(), t, "TICKER", 0.9, "ticker_list"))
+
     resolved: list[Detection] = []
     for doc in range(len(texts)):
         cands = sorted((d for d in usable if d.doc == doc),
@@ -481,6 +504,23 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         e = hit or ents.setdefault(f"{etype}:{norm}", Entity(key=f"{etype}:{norm}", type=etype, variants=set()))
         e.variants.update({norm, LIT + name})
         e.score, e.sources = 1.0, e.sources | {"known_party"}
+
+    # Context tool — ticker linking: "MSFT" stands for MICROSOFT CORP, so that company is in the document too.
+    for t_ent in [e for e in list(ents.values()) if e.type == "TICKER"]:
+        title = policy.tickers.get(t_ent.key.split(":", 1)[1].upper(), "")
+        toks = org_tokens(title.replace(".", " ").replace("/", " "))
+        if not toks or (len(toks) == 1 and toks[0] in lower_words):
+            continue
+        hit = next((e for e in ents.values() if e.type == "ORGANIZATION" and e.tokens[:len(toks)] == toks), None)
+        if hit:
+            hit.sources.add("ticker_link")
+            continue
+        if any(re.search(r"(?<![\w-])" + r"\s+".join(re.escape(w.capitalize()) for w in toks) + r"(?![\w-])", t)
+               or re.search(r"(?<![\w-])" + r"\s+".join(re.escape(w.upper()) for w in toks) + r"(?![\w-])", t)
+               for t in texts):
+            key = f"ORGANIZATION:{' '.join(toks)}"
+            ents.setdefault(key, Entity(key=key, type="ORGANIZATION", variants={" ".join(toks)}, score=0.95,
+                                        sources={"ticker_link"}))
 
     # Context tool — domain linking: "microsoft.com" / "press@microsoft.com" in a document means "Microsoft"
     # is a party name there, even if the language model missed it.
@@ -654,6 +694,31 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         e.mentions.sort()
     entities.sort(key=lambda e: e.mentions[0][:2])
 
+    # Context tool — an amount is a share/stock price when its sentence, or the one before or after, says so
+    # ("The stock fell 9%. It closed at $312.45.").
+    price_cue = re.compile(r"(?i)\b(?:share price|stock price|price per share|per share|closing price|closed at|"
+                           r"trading at|traded at|par value|exercise price|strike price|offer price|IPO price|"
+                           r"market price|stock (?:rose|fell|closed|traded|jumped|dropped))\b")
+    spans_by_doc = {}
+    for e in entities:
+        if e.type != "MONEY" or re.search(r"(?i)million|billion|thousand|\b[mbk]\b|bn|mm", e.mentions[0][3]):
+            continue
+        try:
+            value = float(re.sub(r"[^\d.]", "", e.mentions[0][3]) or 0)
+        except ValueError:
+            continue
+        if value >= 10_000:
+            continue
+        for doc, ms, me, _ in e.mentions:
+            sp = spans_by_doc.setdefault(doc, sentence_spans(texts[doc]))
+            i = next((k for k, (a, b) in enumerate(sp) if a <= ms < b), None)
+            if i is None:
+                continue
+            ctx = " ".join(texts[doc][a:b] for a, b in sp[max(0, i - 1):i + 2])
+            if price_cue.search(ctx):
+                e.type = "SHARE_PRICE"
+                break
+
     # 5. Labels, proposed replacements, confidence tiers, decisions.
     counters: dict[str, int] = defaultdict(int)
     public = [p.lower() for p in policy.public_companies]
@@ -665,7 +730,7 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     pub_mode = settings.get("public_companies") or ("keep" if settings.get("keep_public_companies", True) else "redact")
 
     def looks_public(e: Entity) -> bool:
-        if any(" ".join(org_tokens(m[3])) in public_names for m in e.mentions):
+        if "ticker_link" in e.sources or any(" ".join(org_tokens(m[3])) in public_names for m in e.mentions):
             return True
         return any(re.match(r"\.?,?\s*\((?:NASDAQ|Nasdaq|NYSE|NYSE American|OTC\w*|AMEX|LSE|TSX)\s*:\s*[A-Z.]{1,6}\)",
                             texts[m[0]][m[2]:m[2] + 30]) for m in e.mentions)
@@ -850,6 +915,16 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
             e.tier = "auto"  # context says it's a party: redact without asking
             e.rule = "names.party_by_context"
             e.reason = f"Party by context ({cue or 'its own domain appears'})."
+        elif e.type == "URL":
+            link = e.mentions[0][3]
+            specific = re.search(r"\d{4,}|\.(?:s?html?|pdf|docx?|xlsx?|txt|xml|json|csv)\b|[?#=]|/(?:data|archives?|"
+                                 r"files?|docs?|ix|cgi-bin)/", link, re.IGNORECASE)
+            dom = re.search(r"(?:@|//|www\.|^)(?:[\w-]+\.)*?([\w-]+)\.[a-z]{2,}(?:[/:?#]|$)", link, re.IGNORECASE)
+            org_words = {t for o in entities if o.type == "ORGANIZATION" for t in o.tokens}
+            party = bool(dom) and dom.group(1).lower() in org_words
+            e.tier = "auto" if specific or party else "review"
+            if e.tier == "review":
+                e.reason = "General link? Keep if it names no party or record."
         elif spec.get("auto"):
             e.tier = "auto"
         elif e.type == "PERSON":
