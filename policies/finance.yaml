@@ -250,11 +250,11 @@ flag_for_review:
     replacement: a relative
     reason: A family relationship can re-identify someone even after their name is removed.
   - id: flag.family_relationship
-    pattern: '(?i)(?<=\x27s\s)(?P<v>(?:brother|sister|father|mother|son|daughter|husband|wife|spouse)(?:-in-law)?)\b'
+    pattern: '(?i)(?<=[\x27’]s\s)(?P<v>(?:brother|sister|father|mother|son|daughter|husband|wife|spouse)(?:-in-law)?)\b'
     replacement: relative
     reason: A family relationship can re-identify someone even after their name is removed.
   - id: flag.role_at_named_entity
-    pattern: '(?i)\b(?P<v>the\s+(?:company|firm|fund|adviser|bank)\x27s\s+(?:CEO|CFO|COO|CCO|CIO|general counsel|chief [a-z]+ officer|founder|chairman|treasurer))\b'
+    pattern: '(?i)\b(?P<v>the\s+(?:company|firm|fund|adviser|bank)[\x27’]s\s+(?:CEO|CFO|COO|CCO|CIO|general counsel|chief [a-z]+ officer|founder|chairman|treasurer))\b'
     replacement: a senior executive
     reason: A unique job title at a known firm points to exactly one person.
   - id: flag.role_at_named_entity

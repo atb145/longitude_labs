@@ -54,3 +54,18 @@ def test_upload_needs_rights_checkbox():
     at = AppTest.from_file(APP, default_timeout=180).run()
     btn = next(b for b in at.button if b.label == "Anonymize my files")
     assert btn.disabled
+
+
+def test_old_session_is_upgraded_not_crashing():
+    """A viewer's session created by an older app version (no warnings/VERSION) is rebuilt, not a crash."""
+    from types import SimpleNamespace
+    root = pathlib.Path(APP).parent / "samples"
+    files = sorted(root.glob("*.txt"))
+    old = SimpleNamespace(names=[f.name for f in files], texts=[f.read_text() for f in files],
+                          ops={"decisions": {}, "history": []}, approved={}, policy=None, settings={})
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state.session = old
+    at.session_state.view = "Documents"
+    at.run()
+    assert not at.exception, at.exception
+    assert getattr(at.session_state.session, "VERSION", 0) > 0

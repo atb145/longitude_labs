@@ -37,6 +37,8 @@ class Policy:
     edge_rules: list[dict] = field(default_factory=list)
     nicknames: dict[str, list[str]] = field(default_factory=dict)
     quasi: dict = field(default_factory=dict)          # {"min_categories": int, "categories": {name: [regex]}}
+    party_cues: dict = field(default_factory=dict)     # {"before": [regex], "after": [regex]}
+    generic_domains: set[str] = field(default_factory=set)
 
     def spec(self, entity_type: str) -> dict:
         return self.entities.get(entity_type, {"action": "ignore"})
@@ -116,6 +118,9 @@ def _merge_base(raw: dict) -> dict:
     out["keep_list"] = {k: list(keep_b.get(k) or []) + list(keep_r.get(k) or []) for k in ("terms", "patterns")}
     out["nicknames"] = {**(base.get("nicknames") or {}), **(raw.get("nicknames") or {})}
     out["quasi_identifiers"] = raw.get("quasi_identifiers") or base.get("quasi_identifiers") or {}
+    cues_b, cues_r = base.get("party_cues") or {}, raw.get("party_cues") or {}
+    out["party_cues"] = {k: list(cues_b.get(k) or []) + list(cues_r.get(k) or []) for k in ("before", "after")}
+    out["generic_domains"] = list(base.get("generic_domains") or []) + list(raw.get("generic_domains") or [])
     return out
 
 
@@ -165,6 +170,8 @@ def parse_policy(raw: dict, fallback_name: str) -> Policy:
         flags=flags,
         edge_rules=[dict(r) for r in raw.get("edge_cases") or []],
         nicknames={k.lower(): [v.lower() for v in vs] for k, vs in (raw.get("nicknames") or {}).items()},
+        party_cues={k: [re.compile(p) for p in v] for k, v in (raw.get("party_cues") or {}).items()},
+        generic_domains={d.lower() for d in raw.get("generic_domains") or []},
         quasi={"min_categories": int((raw.get("quasi_identifiers") or {}).get("min_categories", 3)),
                "categories": {k: [re.compile(p) for p in v]
                               for k, v in ((raw.get("quasi_identifiers") or {}).get("categories") or {}).items()}},

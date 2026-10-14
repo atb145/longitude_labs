@@ -434,6 +434,24 @@ def sidebar(sess: Session, res) -> None:
                     st.error(str(exc))
             st.caption("Your review decisions are kept; detection re-runs under the new rules.")
 
+        label("Known parties")
+        with st.expander(f"Always redact these ({len(sess.ops.get('parties', []))})",
+                         expanded=not sess.ops.get("parties")):
+            st.caption("List the client, counterparties, targets and codenames. Every variant is redacted, "
+                       "whatever the detectors find — the most reliable way to catch a party.")
+            kinds = ["ORGANIZATION", "PERSON", "MANUAL"]
+            current = pd.DataFrame(sess.ops.get("parties") or [], columns=["name", "type"])
+            edited = st.data_editor(
+                current, num_rows="dynamic", hide_index=True, key="parties_editor", width="stretch",
+                column_config={"name": st.column_config.TextColumn("Name", required=True),
+                               "type": st.column_config.SelectboxColumn("Type", options=kinds, default="ORGANIZATION",
+                                                                        required=True)})
+            if st.button("Apply parties", width="stretch"):
+                sess.set_parties([{"name": str(r["name"]).strip(), "type": r["type"] or "ORGANIZATION"}
+                                  for r in edited.to_dict("records") if r.get("name") and str(r["name"]).strip()])
+                st.session_state.focus_note = "Known parties applied to every document"
+                st.rerun()
+
         s = sess.settings
         label("Rule buckets")
         disabled = []
@@ -538,7 +556,7 @@ def start_view(sess: Session, res) -> None:
     rows = [{"document": name, "status": ("✓ approved" if is_current(sess, res, i) else
                                           "changed since approval" if i in sess.approved else "in progress"),
              "redactions": len(res.segments[i]),
-             "notes": "; ".join(w["message"] for w in (sess.warnings[i] if i < len(sess.warnings) else []))}
+             "notes": "; ".join(w["message"] for w in (sess.warnings[i] if i < len(getattr(sess, 'warnings', []) or []) else []))}
             for i, name in enumerate(res.names)]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     c1, c2, _ = st.columns([1.4, 1.2, 2])
@@ -790,6 +808,12 @@ doc_panes = st.components.v2.component("doc_panes", js=DOC_JS, isolate_styles=Fa
 def release_box(sess: Session, res) -> list[str]:
     """Release gate: downloads stay off until every check passes."""
     blockers = sess.release_blockers(res)
+    if not sess.rights_confirmed:
+        if st.checkbox("I confirm I have the right to share every document in this set (client, patient and "
+                       "counterparty consent included; nothing privileged or under NDA without consent).",
+                       key=f"rights_late_{st.session_state.get('view', '')}"):
+            sess.rights_confirmed = True
+            st.rerun()
     if blockers:
         st.markdown('<div class="gate"><b>Downloads unlock when these are done</b><ul>'
                     + "".join(f"<li>{html.escape(b)}</li>" for b in blockers) + "</ul></div>", unsafe_allow_html=True)
@@ -924,7 +948,7 @@ def documents(sess: Session, res) -> None:
         f'<span><span class="chip t-{color_type(t)}">&nbsp;</span> {type_name(t)}</span>' for t in present)
         + '<span>Hover any highlight to see the other version. Dashed = not reviewed yet.</span></div>',
         unsafe_allow_html=True)
-    for w in (sess.warnings[doc] if sess.warnings and doc < len(sess.warnings) else []):
+    for w in (sess.warnings[doc] if getattr(sess, 'warnings', None) and doc < len(sess.warnings) else []):
         (st.error if w["level"] == "block" else st.caption)(("Blocks release — " if w["level"] == "block" else "Note: ")
                                                             + w["message"])
     if edit:
@@ -1088,8 +1112,14 @@ def audit_trail(sess: Session, res) -> None:
 
 # --------------------------------------------------------------------------- main
 inject_css()
-header()
 sess: Session | None = st.session_state.get("session")
+if sess is not None and getattr(sess, "VERSION", 0) != Session.VERSION:
+    # The app was updated while this browser session was open: rebuild the set with the new engine,
+    # keeping every decision, instead of crashing on the old object.
+    with st.spinner("The app was updated — re-checking your documents with the new rules…"):
+        sess = st.session_state.session = Session.upgrade(sess)
+    st.toast("Updated to the latest rules — your decisions were kept.")
+header()
 if sess is None:
     home()
 else:

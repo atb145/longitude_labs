@@ -45,19 +45,39 @@ def msft():
 
 
 # ---------------------------------------------------------------- 1. Names & public entities
-def test_1_1_public_company_goes_to_party_check(edge):
+def test_1_1_public_company_that_is_a_party_is_redacted(edge):
+    # "We advised Apex Energy…" — Apex is the client, so the name goes even though it's listed.
     _, res = edge
     apex = entity(res, "Apex Energy")
-    assert apex is not None and apex.status == "pending" and apex.rule == "names.public_company_party_check"
-    assert "E|" + apex.key in res.queue
+    assert apex is not None and apex.status == "auto" and apex.rule == "names.party_by_context"
+    assert "Apex" not in res.outputs[0]
+
+
+def test_1_1_public_company_cited_for_facts_goes_to_party_check():
+    docs = [("d.txt", "Market context: Apex Energy Inc. (NYSE: APXE) reports 35M customers in its 10-K.")]
+    _, res = run(docs)
+    apex = entity(res, "Apex Energy")
+    assert apex.status == "pending" and apex.rule == "names.public_company_party_check"
 
 
 def test_1_1_public_company_mode_keep_and_redact():
-    docs = [("d.txt", "We advised Apex Energy Inc. (NYSE: APXE) on its filing.")]
+    docs = [("d.txt", "Market context: Apex Energy Inc. (NYSE: APXE) reports 35M customers in its 10-K.")]
     _, kept = run(docs, public_companies="keep")
     assert entity(kept, "Apex Energy").status == "public"
     _, red = run(docs, public_companies="redact")
     assert "Apex" not in red.outputs[0]
+
+
+def test_known_parties_are_always_redacted():
+    s = Session.from_texts([("d.txt", "Contoso met Fabrikam twice. CONTOSO's board approved the Fabrikam deal.")])
+    s.set_parties([{"name": "Contoso Holdings", "type": "ORGANIZATION"}, {"name": "Fabrikam", "type": "ORGANIZATION"}])
+    out = s.run().outputs[0]
+    assert "Contoso" not in out and "CONTOSO" not in out and "Fabrikam" not in out
+
+
+def test_domain_linking_catches_company_name():
+    s, res = run([("d.txt", "Quote from Northwind leadership. Contact ir@northwindtraders.com or northwind.com.")])
+    assert "Northwind" not in res.outputs[0]
 
 
 def test_1_2_eponyms_are_kept(edge):

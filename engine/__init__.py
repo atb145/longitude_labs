@@ -30,6 +30,7 @@ def analyzer_for(policy: Policy):
 
 @dataclass
 class Session:
+    VERSION = 5  # bump when the shape of Session/Policy changes; the app rebuilds older sessions
     names: list[str]
     texts: list[str]
     policy: Policy
@@ -104,6 +105,27 @@ class Session:
         template like "Project codename {1}" for reviewer-defined types."""
         self.ops.setdefault("manual", []).append(
             {"text": text, "type": entity_type, "replacement": replacement, "label": label})
+
+    def set_parties(self, parties: list[dict]) -> None:
+        """Known parties ({"name", "type"}): always redacted with every variant (context tool)."""
+        self.ops["parties"] = [p for p in parties if str(p.get("name", "")).strip()]
+
+    @classmethod
+    def upgrade(cls, old) -> "Session":
+        """Rebuild a session created by an older version of the app (kept in a viewer's browser session)."""
+        from .policy import parse_policy
+        raw = getattr(getattr(old, "policy", None), "raw", None)
+        policy = parse_policy(raw, "Policy") if isinstance(raw, dict) else load_policy(available_policies()["Finance"])
+        new = cls.from_texts(list(zip(old.names, old.texts)), policy)
+        ops = dict(getattr(old, "ops", {}) or {})
+        for k, default in (("decisions", {}), ("history", []), ("merges", []), ("splits", []), ("manual", []),
+                           ("deleted", []), ("aliases", []), ("parties", [])):
+            ops.setdefault(k, default)
+        new.ops = ops
+        new.approved = dict(getattr(old, "approved", {}) or {})
+        new.warnings = list(getattr(old, "warnings", None) or [[] for _ in old.names])
+        new.rights_confirmed = bool(getattr(old, "rights_confirmed", False))
+        return new
 
     def redact_as(self, entity_key: str, text: str) -> None:
         """Redact a phrase as another form of an existing entity (it takes that entity's pseudonym)."""
