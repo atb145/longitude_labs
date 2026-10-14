@@ -1,0 +1,250 @@
+# Longitude Anonymizer — Finance policy pack
+#
+# A policy pack is plain data. The engine never hard-codes vertical knowledge:
+# copy this file to legal.yaml / life_sciences.yaml and change the lists.
+#
+# Sections
+#   settings         default values for the UI toggles
+#   thresholds       confidence tiers (auto-apply vs. review queue)
+#   entities         how each entity type is treated (redact / generalize / ignore);
+#                    each redact/generalize entry is an on/off bucket in the sidebar (title = label)
+#   keep_list        public entities that are never redacted
+#   public_companies kept only while the "keep public companies" toggle is on
+#   recognizers      custom regex detectors added to Presidio (group "v" = the value)
+#   flag_for_review  re-identifying phrases: flagged, never auto-changed
+#   edge_cases       additional rules (see bottom of file)
+
+name: Finance
+version: "0.1"
+description: SEC / FINRA enforcement, brokerage and advisory documents.
+
+settings:
+  date_mode: month_year          # month_year | exact
+  keep_public_companies: true
+  redact_organizations: true
+  generalize_addresses: true     # true: street address -> "City, State"; false: "[Address]"
+
+thresholds:
+  auto_apply: 0.85               # detections at/above this score are applied without review
+  min_detection: 0.40            # anything below is ignored entirely
+
+entities:
+  PERSON:
+    title: Person names
+    action: redact
+    label: "Person {A}"
+    rule: always_redact.person_names
+    reason: Person names are always redacted.
+  ORGANIZATION:
+    title: Private organizations
+    action: redact
+    label: "Company {A}"
+    rule: always_redact.private_organizations
+    reason: Private organizations can identify the parties, so they are redacted unless on the keep list.
+  ACCOUNT_NUMBER:
+    title: Account numbers
+    action: redact
+    label: "Account {1}"
+    rule: always_redact.account_numbers
+    reason: Bank and brokerage account numbers are always redacted.
+    auto: true
+  CRD_NUMBER:
+    title: CRD numbers
+    action: redact
+    label: "CRD {1}"
+    rule: always_redact.crd_numbers
+    reason: FINRA CRD numbers identify an individual or firm in BrokerCheck.
+    auto: true
+  CUSIP:
+    title: CUSIPs
+    action: redact
+    label: "CUSIP {1}"
+    rule: always_redact.security_identifiers
+    reason: A CUSIP pins down the exact security traded, which can identify the case.
+    auto: true
+  TICKER:
+    title: Tickers
+    action: redact
+    label: "Ticker {A}"
+    rule: always_redact.security_identifiers
+    reason: A ticker pins down the exact security traded, which can identify the case.
+    auto: true
+  CASE_NUMBER:
+    title: Case / docket numbers
+    action: redact
+    label: "Case {1}"
+    rule: always_redact.case_numbers
+    reason: Case and docket numbers are directly searchable in public court and SEC records.
+    auto: true
+  EMAIL_ADDRESS:
+    title: Email addresses
+    action: redact
+    label: "Email {1}"
+    rule: always_redact.emails
+    reason: Email addresses are always redacted.
+    auto: true
+  PHONE_NUMBER:
+    title: Phone numbers
+    action: redact
+    label: "Phone {1}"
+    rule: always_redact.phones
+    reason: Phone numbers are always redacted.
+    auto: true
+  US_SSN:
+    title: Social Security numbers
+    action: redact
+    label: "SSN {1}"
+    rule: always_redact.ssns
+    reason: Social Security numbers are always redacted.
+    auto: true
+  STREET_ADDRESS:
+    title: Street addresses
+    action: generalize
+    label: "Address {1}"
+    rule: generalize.street_addresses
+    reason: Street addresses are generalized to city and state.
+    auto: true
+  DATE:
+    title: Dates → month + year
+    action: generalize
+    label: "Date {1}"
+    rule: generalize.dates
+    reason: Exact dates are generalized to month and year.
+    auto: true
+  LOCATION: { action: ignore }   # cities / states stay — they are what addresses generalize to
+  NRP: { action: ignore }
+
+keep_list:
+  # matched case-insensitively, whole words, anywhere in the text
+  terms:
+    - Securities and Exchange Commission
+    - SEC
+    - FINRA
+    - Financial Industry Regulatory Authority
+    - NYSE
+    - New York Stock Exchange
+    - Nasdaq
+    - Federal Reserve
+    - Department of Justice
+    - Division of Enforcement
+    - Investment Advisers Act
+    - Securities Exchange Act
+    - BrokerCheck
+    - United States of America
+    - the Commission
+    - New York Regional Office
+    - Regional Office
+    - Federal Rules of Civil Procedure
+  patterns:
+    - '(?i)United States (?:District )?Court(?: of Appeals)?(?: for the [A-Z][\w\s]+?)?(?=[\n,.;])'
+    - '(?i)\b(?:Southern|Northern|Eastern|Western|Central|Middle) District of [A-Z][a-z]+(?: [A-Z][a-z]+)?'
+    - '\bS\.D\.N\.Y\.|\bE\.D\.N\.Y\.|\bD\.D\.C\.'
+    # The regulator's own address block is public.
+    - '100 F Street,? N\.?E\.?(?:,?\s+Washington,?\s+D\.?C\.?\s+20549)?'
+    - 'Washington,?\s+D\.?C\.?\s+20549'
+    - '100 Pearl Street(?:,\s+Suite\s+[\d-]+)?'
+    # Placeholders the SEC already uses ("Pharma Company A", "Individual E", "Fund X") are anonymous.
+    - '\b(?:[A-Z][a-z]+\s+){0,2}(?:Company|Individual|Fund|Adviser|Advisor|Investor|Person|Entity|Bank|Broker|Trader|Firm|Employee|Executive|Issuer|Customer|Client|Relative|Friend)\s+[A-Z]{1,2}\b(?![a-z])'
+
+# Words the language model sometimes mistakes for names or companies. Never entities.
+not_entities: [CRD, CRD No, CFO, CEO, COO, CCO, SSN, EIN, CUSIP, MNPI, ATS, Commission, Respondent, Respondents,
+               Plaintiff, Defendant, Defendants, Relief Defendant, Relief Defendants, Court, Staff, Order,
+               Complaint, Division, Re, Exchange, Board, Board of Directors, Account, Accounts, Fund, Funds,
+               Venue, Son, Daughter, Friend, Wife, Husband, Brother, Sister, Announcement, Relevant Period,
+               Trust, Trustee, Issuer, Company, Individual, Defendants’, Investment Advisers]
+
+# Words that get glued onto the front of a name by detectors ("Defendants Meyer Global LLC").
+name_noise_words: [defendant, defendants, plaintiff, relief, respondent, against, former, another, sold, bought,
+                   misappropriate, misappropriated, through, via, from, to, by, the, a, an, each, both, certain,
+                   other, its, his, her, their, including, and, or, of, pre-ipo, pursuant, between, with]
+
+public_companies:
+  - JPMorgan Chase
+  - Goldman Sachs
+  - Morgan Stanley
+  - Bank of America
+  - Charles Schwab
+  - Fidelity
+  - Wells Fargo
+  - Citigroup
+
+recognizers:
+  - entity: ACCOUNT_NUMBER
+    score: 0.95
+    patterns:
+      - '(?i)\b(?:account|acct\.?|a/c)(?:\s+(?:no\.?|number|#))?\s*:?\s*(?P<v>\d{3,5}-\d{4,9}|\d{8,14})\b'
+      - '(?i)\b(?:account|acct\.?|accounts)\b[^.\n]{0,60}?(?P<v>\b\d{3,5}-\d{5,9}\b)'
+      - '(?i)\bthrough\s+account\s+(?P<v>\d{3,5}-\d{4,9})'
+  - entity: CRD_NUMBER
+    score: 0.95
+    patterns:
+      - '(?i)\bCRD\s*(?:No\.?|Number|#)?\s*:?\s*(?P<v>\d{4,8})\b'
+  - entity: CUSIP
+    score: 0.95
+    patterns:
+      - '(?i)\bCUSIP\s*(?:No\.?|#)?\s*:?\s*(?P<v>[0-9]{3}[0-9A-Z]{5}[0-9])\b'
+  - entity: TICKER
+    score: 0.9
+    patterns:
+      - '\((?:NASDAQ|Nasdaq|NYSE|NYSE American|OTC|AMEX)\s*:\s*(?P<v>[A-Z]{1,5})\)'
+      - '(?i:ticker(?: symbol)?)\s+"?(?P<v>[A-Z]{1,5})\b'
+  - entity: CASE_NUMBER
+    score: 0.95
+    patterns:
+      - '\b(?P<v>\d:\d{2}-(?:cv|cr|mc|md)-\d{3,6}(?:-[A-Z]{2,4})?)\b'
+      - '(?i)\bFile\s+No\.?\s*(?P<v>(?:3|HO|[A-Z]{1,3})-\d{4,6})\b'
+      - '(?i)\b(?:Docket|Case)\s+No\.?\s*(?P<v>\d{2,4}-[A-Z0-9-]{3,12})\b'
+  - entity: STREET_ADDRESS
+    score: 0.9
+    patterns:
+      - '(?P<v>\b\d{1,6}\s+(?:[A-Z][A-Za-z0-9.]*\s+){1,4}(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.|Lane|Ln\.|Drive|Dr\.|Way|Place|Pl\.|Court|Ct\.|Plaza|Terrace|Parkway)(?:,?\s+(?:Suite|Apt\.?|Unit|Floor|Fl\.)\s+\w+)?,\s+[A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?,\s+(?:[A-Z]{2}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)(?:\s+\d{5}(?:-\d{4})?)?)'
+  - entity: DATE
+    score: 0.95
+    patterns:
+      - '(?P<v>\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan\.|Feb\.|Mar\.|Apr\.|Jun\.|Jul\.|Aug\.|Sept?\.|Oct\.|Nov\.|Dec\.)\s+\d{1,2},\s+\d{4}\b)'
+      - '(?P<v>\b\d{1,2}/\d{1,2}/\d{4}\b)'
+      - '(?P<v>\b\d{4}-\d{2}-\d{2}\b)'
+  - entity: ORGANIZATION
+    score: 0.9
+    name: org_suffix_recognizer
+    patterns:
+      - '(?P<v>\b(?:[A-Z][A-Za-z&\x27]+[ ]+){1,4}(?:LLC|L\.L\.C\.|Inc\.|Inc|Corp\.|Corporation|L\.P\.|LP|Ltd\.|Holdings|Partners|Securities|Therapeutics|Capital Management|Advisors|Group)\b)'
+      - '(?P<v>\b(?:[A-Z][A-Z&\x27]+[ ]+){1,4}(?:LLC|INC\.|CORP\.|L\.P\.|LTD\.|PARTNERS|SECURITIES)\b)'
+
+flag_for_review:
+  - id: flag.family_relationship
+    pattern: '(?i)\b(?P<v>(?:his|her|their|the)\s+(?:brother|sister|father|mother|son|daughter|cousin|uncle|aunt|nephew|niece|husband|wife|spouse|partner|fianc[eé]e?)(?:-in-law)?)\b'
+    replacement: a relative
+    reason: A family relationship can re-identify someone even after their name is removed.
+  - id: flag.family_relationship
+    pattern: '(?i)\bthe\s+(?P<v>(?:brother|sister|father|mother|son|daughter|cousin)-in-law)\s+of\b'
+    replacement: a relative
+    reason: A family relationship can re-identify someone even after their name is removed.
+  - id: flag.family_relationship
+    pattern: '(?i)(?<=\x27s\s)(?P<v>(?:brother|sister|father|mother|son|daughter|husband|wife|spouse)(?:-in-law)?)\b'
+    replacement: relative
+    reason: A family relationship can re-identify someone even after their name is removed.
+  - id: flag.role_at_named_entity
+    pattern: '(?i)\b(?P<v>the\s+(?:company|firm|fund|adviser|bank)\x27s\s+(?:CEO|CFO|COO|CCO|CIO|general counsel|chief [a-z]+ officer|founder|chairman|treasurer))\b'
+    replacement: a senior executive
+    reason: A unique job title at a known firm points to exactly one person.
+  - id: flag.role_at_named_entity
+    pattern: '(?i)\b(?P<v>(?:the\s+)?(?:former\s+)?(?:chief (?:executive|financial|operating|compliance|investment) officer|managing partner|general counsel))\b'
+    replacement: a senior executive
+    reason: A unique job title at a known firm points to exactly one person.
+
+# ---------------------------------------------------------------------------
+# EDGE CASES — [MY TASK 1 EDGE CASES GO HERE AS ADDITIONAL RULES]
+#
+# Each rule:  id, description, pattern (regex; optional named group "v" = span),
+#             action: redact | flag | keep,
+#             entity (for redact), replacement + reason (for flag), reason.
+# Example:
+#   - id: edge.nickname_in_quotes
+#     description: Nicknames in quotes after a name, e.g. Jonathan "Jack" Mercer
+#     pattern: '"(?P<v>[A-Z][a-z]+)"'
+#     action: redact
+#     entity: PERSON
+#     reason: Nicknames identify the person just like the legal name.
+# ---------------------------------------------------------------------------
+edge_cases: []

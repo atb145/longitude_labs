@@ -1,0 +1,51 @@
+# Brand: white, charcoal and soft blue dominate (light background is plain white by request); navy and cyan are rare accents.
+#   cream #F7F3EA · charcoal #272727 · soft blue #A7DAEF · navy #092E65 · cyan #1DB5DA · warm gray #EFEBE3
+# Type: Libre Franklin for body and interface. Headlines use Newsreader, a free stand-in for
+# Financier Display (commercial; swap it in via [[theme.fontFaces]] once licensed).
+# Viewers switch light / dark in the app menu (⋮ → Settings → Theme).
+
+[server]
+maxUploadSize = 50
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+font = "Libre Franklin:https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;500;600&display=swap"
+headingFont = "Newsreader:https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500&display=swap"
+headingFontWeights = 500
+baseFontSize = 16
+baseRadius = "0.6rem"
+buttonRadius = "full"
+showWidgetBorder = true
+
+[theme.light]
+primaryColor = "#092E65"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F5F6"
+textColor = "#272727"
+linkColor = "#092E65"
+borderColor = "#E3E5E8"
+codeBackgroundColor = "#F4F5F6"
+
+[theme.light.sidebar]
+backgroundColor = "#FAFAFA"
+secondaryBackgroundColor = "#FFFFFF"
+borderColor = "#E3E5E8"
+
+[theme.dark]
+primaryColor = "#A7DAEF"
+backgroundColor = "#1F1F1E"
+secondaryBackgroundColor = "#2A2927"
+textColor = "#F7F3EA"
+linkColor = "#A7DAEF"
+borderColor = "#3B3935"
+codeBackgroundColor = "#2A2927"
+
+[theme.dark.sidebar]
+backgroundColor = "#272727"
+secondaryBackgroundColor = "#1F1F1E"
+borderColor = "#3B3935"

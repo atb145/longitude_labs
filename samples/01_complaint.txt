@@ -1,0 +1,24 @@
+UNITED STATES DISTRICT COURT
+SOUTHERN DISTRICT OF NEW YORK
+
+SECURITIES AND EXCHANGE COMMISSION,
+Plaintiff,
+v.
+JONATHAN R. MERCER and HARBORVIEW CAPITAL PARTNERS LLC,
+Defendants.
+
+Case No. 1:24-cv-03817
+
+COMPLAINT
+
+1. Plaintiff Securities and Exchange Commission ("SEC") alleges that between January 2022 and June 2023, Jonathan R. Mercer, the managing partner of Harborview Capital Partners LLC ("Harborview"), misappropriated approximately $4.2 million from advisory clients.
+
+2. Mr. Mercer, age 52, resides at 418 Linden Avenue, Greenwich, Connecticut 06830. He has been associated with registered broker-dealers since 1998 and holds CRD No. 2849117.
+
+3. Harborview is an investment adviser registered with the SEC and headquartered in Stamford, Connecticut. Its affiliate, Northgate Securities Inc., is a FINRA member firm.
+
+4. On March 14, 2022, Mercer caused $750,000 to be wired from client brokerage account 4471-882910 at JPMorgan Chase to an account controlled by his brother-in-law, Daniel Okafor.
+
+5. Okafor, who served as the company's CFO until 2021, then purchased shares of Bellcrest Therapeutics (NASDAQ: BLCT), CUSIP 07813Q104, days before a public announcement.
+
+6. Mercer's conduct violated Section 206 of the Investment Advisers Act. The SEC seeks disgorgement and civil penalties.
