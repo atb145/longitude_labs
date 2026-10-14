@@ -33,7 +33,7 @@ TYPE_COLORS = {  # restrained hues; used at low alpha so they read on cream and 
     "MANUAL": "39,39,39", "MONEY": "160,170,90", "SHARE_COUNT": "160,170,90", "URL": "120,180,150",
     "TAX_ID": "232,170,90",
 }
-VIEWS = ["Review", "Documents", "Approved", "Log & consistency"]
+VIEWS = ["Start", "Review", "Documents", "Final"]
 
 st.set_page_config(page_title="Longitude Anonymizer", page_icon="◐", layout="wide",
                    initial_sidebar_state="expanded")
@@ -502,6 +502,55 @@ def sidebar(sess: Session, res) -> None:
         st.caption("Light / dark: ⋮ menu → Settings → Theme.")
 
 
+# --------------------------------------------------------------------------- adding documents / start
+def add_documents_form(sess: Session, key: str) -> None:
+    """Upload more files into the current set (same registry, so pseudonyms stay consistent)."""
+    ups = st.file_uploader("Add documents", type=[x.strip(".") for x in SUPPORTED], accept_multiple_files=True,
+                           key=f"{key}_files", label_visibility="collapsed")
+    ok = st.checkbox("I have the right to share these documents too (client, patient and counterparty consent "
+                     "included; nothing privileged or under NDA without consent).", key=f"{key}_rights")
+    if st.button("Add to this set", type="primary", disabled=not (ups and ok), key=f"{key}_go"):
+        before = len(sess.run().queue)
+        with st.spinner("Reading and detecting…"):
+            try:
+                added = sess.add_files([(u.name, u.getvalue()) for u in ups])
+            except ValueError as exc:
+                st.error(str(exc))
+                return
+        new_items = len(sess.run().queue) - before
+        st.session_state.focus_note = (f"Added {len(added)} document{'s' if len(added) != 1 else ''}"
+                                       + (f" — {new_items} new item{'s' if new_items != 1 else ''} to review"
+                                          if new_items > 0 else ""))
+        st.session_state.pop(f"{key}_files", None)
+        st.rerun()
+
+
+@st.dialog("Add documents", width="large")
+def add_documents_dialog(sess: Session) -> None:
+    st.caption("New files join this set: anyone already in the registry keeps their pseudonym, and earlier "
+               "decisions still apply. New findings join the review queue.")
+    add_documents_form(sess, "dlg_add")
+
+
+def start_view(sess: Session, res) -> None:
+    """Step 1 while a set is open: what's in it, add more, or start again."""
+    st.markdown('<h2>Your document set</h2>', unsafe_allow_html=True)
+    rows = [{"document": name, "status": ("✓ approved" if is_current(sess, res, i) else
+                                          "changed since approval" if i in sess.approved else "in progress"),
+             "redactions": len(res.segments[i]),
+             "notes": "; ".join(w["message"] for w in (sess.warnings[i] if i < len(sess.warnings) else []))}
+            for i, name in enumerate(res.names)]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    c1, c2, _ = st.columns([1.4, 1.2, 2])
+    c1.button("Continue reviewing →", type="primary", width="stretch",
+              on_click=lambda: st.session_state.update(view="Review"))
+    c2.button("Start a new set", width="stretch", on_click=reset,
+              help="Clears this set and every decision — download what you need first.")
+    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+    label("Add documents to this set")
+    add_documents_form(sess, "start_add")
+
+
 # --------------------------------------------------------------------------- review
 def bearing(done: int, total: int) -> None:
     frac = done / total if total else 1.0
@@ -517,14 +566,20 @@ def review(sess: Session, res) -> None:
     pending = [k for k in queue if res.item(k).status == "pending"]
     bearing(len(queue) - len(pending), len(queue))
 
+    if st.button("＋ Add documents", key="rv_add", help="Upload more files into this set"):
+        add_documents_dialog(sess)
+
     if not pending:
         st.markdown('<h2>Everything is reviewed</h2>', unsafe_allow_html=True)
         st.markdown(f'<p class="ll-note">{sum(e.status == "auto" for e in res.entities)} high-confidence detections '
-                    'were applied automatically. Open Documents to read the result.</p>', unsafe_allow_html=True)
-        c1, c2, _ = st.columns([1, 1, 2])
-        c1.button("Back", on_click=undo, disabled=not sess.ops["history"], width="stretch")
-        c2.button("Open documents", type="primary", width="stretch",
+                    'were applied automatically. Next: read each document side by side and approve it.</p>',
+                    unsafe_allow_html=True)
+        c1, c2, c3, _ = st.columns([1.5, 1.3, .8, 1.4])
+        c1.button("Continue to documents →", type="primary", width="stretch",
                   on_click=lambda: st.session_state.update(view="Documents"))
+        if c2.button("＋ Add documents", width="stretch", key="rv_add_done"):
+            add_documents_dialog(sess)
+        c3.button("Back", on_click=undo, disabled=not sess.ops["history"], width="stretch")
         return
 
     key = pending[0]
@@ -832,13 +887,15 @@ def documents(sess: Session, res) -> None:
 
     st.markdown(f'<p class="count-top"><b>{approved}/{n}</b> approved</p><p class="ll-label">Documents</p>',
                 unsafe_allow_html=True)
-    d1, d2, d3, d4 = st.columns([4.6, .55, .55, 1.7], vertical_alignment="bottom")
+    d1, d2, d3, d4, d5 = st.columns([4.2, .55, .55, 1.6, 1.45], vertical_alignment="bottom")
     # A dropdown scales to large sets (type to search); ✓ marks approved documents.
     doc = d1.selectbox("Document", list(range(n)), key="doc_pick", label_visibility="collapsed",
                        format_func=lambda i: f"{'✓ ' if is_current(sess, res, i) else ''}{res.names[i]}")
     d2.button("←", on_click=step, args=(-1,), help="Previous document", width="stretch", key="prev_doc")
     d3.button("→", on_click=step, args=(1,), help="Next document", width="stretch", key="next_doc")
     d4.button("Next to approve", on_click=next_unapproved, disabled=approved == n, width="stretch")
+    if d5.button("＋ Add documents", width="stretch", key="doc_add"):
+        add_documents_dialog(sess)
 
     edit = st.session_state.get("edit_mode", False)
     options = [(i, v) for i in range(n) for v in ("original", "anonymized")]
@@ -900,17 +957,27 @@ def documents(sess: Session, res) -> None:
         a1.button("✓ Approved · undo", width="stretch", key=f"unapprove_{doc}",
                   on_click=lambda: sess.unapprove(doc), help="Move this document back out of the final stage.")
     else:
-        if a1.button("✓ Approve new version" if stale else "✓ Approve document", type="primary", width="stretch",
-                     key=f"approve_{doc}"):
+        def approve_and_advance() -> None:
             sess.approve(doc, res)
-            st.session_state.focus_note = f"Approved {res.names[doc]} — it's in the final stage"
-            st.rerun()
+            todo = [i for i in list(range(doc + 1, n)) + list(range(doc)) if not is_current(sess, res, i)]
+            if todo:
+                st.session_state.doc_pick = todo[0]
+                st.session_state.focus_note = f"Approved {res.names[doc]} — next: {res.names[todo[0]]}"
+            else:
+                st.session_state.focus_note = "Every document is approved — the final package is ready"
+
+        a1.button("✓ Approve new version" if stale else "✓ Approve document", type="primary", width="stretch",
+                  key=f"approve_{doc}", on_click=approve_and_advance)
     blocked = bool(sess.release_blockers(res))
     a2.download_button("Download this document", res.outputs[doc], f"{Path(res.names[doc]).stem}.anonymized.txt",
                        "text/plain", width="stretch", disabled=blocked)
     a3.download_button("Download all (.zip)", buyer_zip(res.names, res.outputs), "anonymized_documents.zip",
                        "application/zip", type="primary", width="stretch", disabled=blocked)
     release_box(sess, res)
+    if approved == n:
+        st.success("Every document is approved.")
+        st.button("Go to the final package →", type="primary", key="to_final",
+                  on_click=lambda: st.session_state.update(view="Final"))
     if stale:
         st.warning("This document changed after you approved it. Approve the new version to update the final "
                    "stage; until then it keeps the version you approved.")
@@ -923,24 +990,47 @@ def documents(sess: Session, res) -> None:
                      hide_index=True, width="stretch")
 
 
-def approved_view(sess: Session, res) -> None:
+def final_view(sess: Session, res) -> None:
+    """Step 4: everything compiled — progress, release check, the approved package, and the audit trail."""
     n = len(res.names)
     items = sorted(sess.approved.items())
-    st.markdown(f'<p class="count-top"><b>{len(items)}/{n}</b> approved</p><h2>Final stage</h2>'
-                f'<p class="ll-note">Approved documents are stored here as the exact version you approved.</p>',
-                unsafe_allow_html=True)
+    cc = consistency_check(res)
+    reviewed = len(res.queue) - len(cc["unreviewed"])
+    current = sum(is_current(sess, res, i) for i in range(n))
+    st.markdown('<h2>Final package</h2>', unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Documents approved", f"{current}/{n}")
+    m2.metric("Review items done", f"{reviewed}/{len(res.queue)}")
+    m3.metric("Entities", len(res.entities), help="Each has one pseudonym across every document.")
+    m4.metric("Leaks found", 0 if cc["leak_free"] else sum(bool(r["leaks"]) for r in cc["rows"]))
+    todo = [i for i in range(n) if not is_current(sess, res, i)]
+    if todo:
+        st.markdown(f'<p class="ll-note">Still to approve: {html.escape(", ".join(res.names[i] for i in todo))}. '
+                    'Only approved documents go into the package.</p>', unsafe_allow_html=True)
+        st.button("Approve the rest in Documents →", key="final_to_docs",
+                  on_click=lambda: st.session_state.update(view="Documents", doc_pick=todo[0]))
     if not items:
-        st.info("Nothing approved yet. Open Documents and tick the check-mark at the bottom of a document.")
+        st.info("Nothing approved yet. Open Documents and press ✓ Approve document under each one.")
+        st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+        audit_trail(sess, res)
         return
+    blocked = bool(release_box(sess, res))
+    names = [res.names[d] for d, _ in items]
+    outputs = [a["output"] for _, a in items]
+    combined = "\n\n".join(f"{'=' * 72}\n{name}\n{'=' * 72}\n\n{out}" for name, out in zip(names, outputs))
+    c1, c2, _ = st.columns([1.6, 1.6, 1.2])
+    c1.download_button(f"Download package (.zip, {len(items)})", buyer_zip(names, outputs), "anonymized_package.zip",
+                       "application/zip", type="primary", disabled=blocked, width="stretch")
+    c2.download_button("Download as one combined file", combined, "anonymized_package.txt", "text/plain",
+                       disabled=blocked, width="stretch")
+    st.caption("Documents only. The mapping key (redaction log) stays internal — see the audit trail below.")
+    with st.expander("Preview the compiled package"):
+        st.markdown(f'<div class="doc" style="max-height:460px;overflow:auto">{html.escape(combined)}</div>',
+                    unsafe_allow_html=True)
+    label("Approved documents")
     rows = [{"document": res.names[d], "approved": a["at"], "redactions": a["changes"],
              "status": "current" if a["output"] == res.outputs[d] else "changed since approval"} for d, a in items]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    names = [res.names[d] for d, _ in items]
-    outputs = [a["output"] for _, a in items]
-    blocked = release_box(sess, res)
-    st.download_button(f"Download approved documents (.zip, {len(items)})", buyer_zip(names, outputs),
-                       "approved_documents.zip", "application/zip", type="primary", disabled=bool(blocked))
-    st.caption("The ZIP holds the documents only. The mapping key (redaction log) stays internal — see Log & consistency.")
     for d, a in items:
         with st.expander(f"✓ {res.names[d]} — approved {a['at']}"):
             c1, c2, _ = st.columns([1.4, 1, 2])
@@ -951,15 +1041,12 @@ def approved_view(sess: Session, res) -> None:
                 st.rerun()
             st.markdown(f'<div class="doc" style="max-height:340px;overflow:auto">{html.escape(a["output"])}</div>',
                         unsafe_allow_html=True)
+    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+    audit_trail(sess, res)
 
 
 # --------------------------------------------------------------------------- log & consistency
-def log_view(sess: Session, res) -> None:
-    label("Release check")
-    if not release_box(sess, res):
-        st.markdown('<div class="check"><span class="ok">✓</span>&nbsp; Ready to release: rights confirmed, review '
-                    'complete, no leaks, every page read.</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+def audit_trail(sess: Session, res) -> None:
     cc = consistency_check(res)
     label("Consistency check")
     n = len(cc["rows"])
@@ -1005,9 +1092,14 @@ else:
     if st.session_state.get("focus_note"):
         st.toast(st.session_state.pop("focus_note"))
     n_ok = sum(is_current(sess, res, i) for i in range(len(res.names)))
-    labels = {"Review": "Review", "Documents": f"Documents {n_ok}/{len(res.names)}",
-              "Approved": f"✓ Approved ({len(sess.approved)})", "Log & consistency": "Log & consistency"}
-    view = st.segmented_control("View", VIEWS, key="view", format_func=labels.get,
+    open_items = sum(res.item(k).status == "pending" for k in res.queue)
+    if st.session_state.get("view") not in VIEWS:
+        st.session_state.view = "Review"
+    labels = {"Start": "① Start",
+              "Review": "② Review" + (f" · {open_items} open" if open_items else " ✓"),
+              "Documents": f"③ Documents · {n_ok}/{len(res.names)}",
+              "Final": "④ Final" + (" ✓" if n_ok == len(res.names) else "")}
+    view = st.segmented_control("Step", VIEWS, key="view", format_func=labels.get,
                                 label_visibility="collapsed") or "Review"
     st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
-    {"Review": review, "Documents": documents, "Approved": approved_view, "Log & consistency": log_view}[view](sess, res)
+    {"Start": start_view, "Review": review, "Documents": documents, "Final": final_view}[view](sess, res)

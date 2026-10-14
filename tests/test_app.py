@@ -12,7 +12,7 @@ def test_sample_flow_all_views():
     next(b for b in at.button if b.label == "Try with sample case").click().run()
     assert not at.exception
     sess = at.session_state.session
-    for view in ("Review", "Documents", "Approved", "Log & consistency"):
+    for view in ("Start", "Review", "Documents", "Final"):
         at.session_state.view = view
         at.run()
         assert not at.exception, (view, at.exception)
@@ -27,6 +27,27 @@ def test_sample_flow_all_views():
     at.run()
     zips = [d for d in at.get("download_button") if "Download all" in d.proto.label]
     assert not zips[0].proto.disabled
+    # Approve everything -> the final package is downloadable as a ZIP and as one combined file
+    at.session_state.view = "Final"
+    at.run()
+    for i in range(len(sess.names)):
+        sess.approve(i, sess.run())
+    at.run()
+    assert not at.exception, at.exception
+    labels = [d.proto.label for d in at.get("download_button") if not d.proto.disabled]
+    assert any("Download package" in l for l in labels) and any("combined" in l for l in labels)
+
+
+def test_add_documents_keeps_pseudonyms():
+    from engine import Session
+    root = pathlib.Path(APP).parent / "samples"
+    files = sorted(root.glob("*.txt"))
+    s = Session.from_files([(f.name, f.read_bytes()) for f in files[:1]])
+    first = {e.key: e.label for e in s.run().entities if e.type == "PERSON"}
+    s.add_files([(f.name, f.read_bytes()) for f in files[1:]])
+    after = {e.key: e.label for e in s.run().entities if e.type == "PERSON"}
+    assert all(after.get(k) == v for k, v in first.items())
+    assert len(s.names) == len(files)
 
 
 def test_upload_needs_rights_checkbox():

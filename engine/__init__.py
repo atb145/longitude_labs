@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .detect import Detection, build_analyzer, detect
 from .extract import extract_document, extract_text
@@ -54,6 +54,26 @@ class Session:
         sess = cls.from_texts([(n, d.text) for n, d in docs], policy)
         sess.warnings = [d.warnings for _, d in docs]
         return sess
+
+    def add_files(self, files: list[tuple[str, bytes]]) -> list[str]:
+        """Add documents to this set. They join the same registry, so names already seen keep their pseudonyms
+        and every earlier decision still applies. Returns the names as stored (duplicates get " (2)")."""
+        added = []
+        offset = len(self.texts)
+        new_texts = []
+        for name, data in files:
+            ex = extract_document(name, data)
+            stored, n = name, 2
+            while stored in self.names or stored in added:
+                stored, n = f"{name} ({n})", n + 1
+            added.append(stored)
+            new_texts.append(ex.text)
+            self.warnings.append(ex.warnings)
+        dets = detect(analyzer_for(self.policy), self.policy, new_texts)
+        self.detections = self.detections + [replace(d, doc=d.doc + offset) for d in dets]
+        self.names = self.names + added
+        self.texts = self.texts + new_texts
+        return added
 
     def with_policy(self, policy: Policy) -> "Session":
         """Same documents and review decisions, re-detected under another policy pack."""
