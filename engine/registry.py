@@ -468,6 +468,34 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         if d.type not in ("PERSON", "ORGANIZATION"):
             add(d.type, normalize(d.type, d.text), d, d.text.strip())
 
+    # Context tool — known parties: names the reviewer lists up front (client, counterparties, codenames) are
+    # always redacted, with every variant, whatever the detectors found.
+    for party in ops.get("parties", []):
+        name = re.sub(r"\s+", " ", str(party.get("name", "")).strip())
+        etype = party.get("type") or "ORGANIZATION"
+        if not name:
+            continue
+        norm = normalize(etype, name) or name.lower()
+        hit = next((e for e in ents.values() if e.type == etype and
+                    (e.key == f"{etype}:{norm}" or (etype == "ORGANIZATION" and e.tokens[:len(norm.split())] == norm.split()))), None)
+        e = hit or ents.setdefault(f"{etype}:{norm}", Entity(key=f"{etype}:{norm}", type=etype, variants=set()))
+        e.variants.update({norm, LIT + name})
+        e.score, e.sources = 1.0, e.sources | {"known_party"}
+
+    # Context tool — domain linking: "microsoft.com" / "press@microsoft.com" in a document means "Microsoft"
+    # is a party name there, even if the language model missed it.
+    domain_rx = re.compile(r"(?:@|\b(?:https?://)?(?:[\w-]+\.)*)([a-z][\w-]{2,})\.(?:com|org|net|io|co|ai|biz|us|uk|de|fr)\b",
+                           re.IGNORECASE)
+    labels = {m.group(1).lower() for t in texts for m in domain_rx.finditer(t)} - policy.generic_domains
+    for lab in labels:
+        if any(e.type == "ORGANIZATION" and lab in e.tokens for e in ents.values()):
+            continue
+        if any(re.search(r"(?<![\w.@/-])(?:" + re.escape(lab.capitalize()) + "|" + re.escape(lab.upper()) + r")(?![\w-])", t)
+               for t in texts) and lab not in policy.not_entities:
+            key = f"ORGANIZATION:{lab}"
+            ents.setdefault(key, Entity(key=key, type="ORGANIZATION", variants={lab}, score=0.95,
+                                        sources={"domain_link"}))
+
     # Derived variants so short forms are caught everywhere (surname, company short name).
     # A surname shared by two people (David and Justine Reichman) is ambiguous on its own, so it is
     # only linked through an explicit alias in the text, never derived.
@@ -642,6 +670,23 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         return any(re.match(r"\.?,?\s*\((?:NASDAQ|Nasdaq|NYSE|NYSE American|OTC\w*|AMEX|LSE|TSX)\s*:\s*[A-Z.]{1,6}\)",
                             texts[m[0]][m[2]:m[2] + 30]) for m in e.mentions)
 
+    def party_cue(e: Entity) -> str:
+        """Context tool — words around a mention that make it a party (registrant line, defined role,
+        'agreement with', 'will acquire' …). Returns the cue found, or ''."""
+        if "known_party" in e.sources:
+            return "listed as a known party"
+        for doc, ms, me, _ in e.mentions:
+            after, before = texts[doc][me:me + 120], texts[doc][max(0, ms - 60):ms]
+            for rx in policy.party_cues.get("after", []):
+                m = rx.search(after)
+                if m:
+                    return " ".join(m.group().split())[:60]
+            for rx in policy.party_cues.get("before", []):
+                m = rx.search(before)
+                if m:
+                    return " ".join(m.group().split())[-60:]
+        return ""
+
     def kept_by_policy(e: Entity) -> bool:  # kept entities don't use up a pseudonym ("Company C")
         if e.key in hand:
             return False
@@ -650,7 +695,7 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         if e.type == "ORGANIZATION":
             if not settings.get("redact_organizations", True):
                 return True
-            return pub_mode == "keep" and looks_public(e)
+            return pub_mode == "keep" and looks_public(e) and not party_cue(e)
         return False
 
     for e in [x for x in entities if x.key not in hand] + [x for x in entities if x.key in hand]:
@@ -730,11 +775,12 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 e.proposed, e.rule = f"[{e.label}]", "always_redact.addresses"
         if e.type == "ORGANIZATION":
             canon = " ".join(org_tokens(e.canonical))
-            if pub_mode == "keep" and looks_public(e):
+            cue = party_cue(e)
+            if pub_mode == "keep" and looks_public(e) and not cue:
                 e.status, e.rule = "public", "keep_list.public_companies"
                 e.reason = "Public companies are kept while this setting is on."
                 continue
-            if pub_mode == "review" and looks_public(e):
+            if pub_mode == "review" and looks_public(e) and not cue:
                 e.tier, e.rule = "review", "names.public_company_party_check"
                 e.reason = ("Public company. Is it a party to this engagement (the client, a counterparty, the target)? "
                             "If so, Accept — keeping the name reveals who hired whom. Keep original only when it is "
@@ -748,7 +794,12 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 continue
 
         high = e.score >= policy.auto_apply
-        if spec.get("auto"):
+        if e.type == "ORGANIZATION" and (cue or {"known_party", "domain_link"} & e.sources):
+            e.tier = "auto"  # context says it's a party: redact without asking
+            e.rule = "names.party_by_context"
+            e.reason = (f"Redacted as a party: {cue or 'its own web or email domain appears in the document'}. "
+                        "A party's name reveals who was involved, so it's redacted even if the company is public.")
+        elif spec.get("auto"):
             e.tier = "auto"
         elif e.type == "PERSON":
             e.tier = "auto" if high and len(e.tokens) >= 2 else "review"

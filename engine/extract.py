@@ -59,7 +59,7 @@ def _pdf(data: bytes) -> Extracted:
                 warnings.append({"level": "block", "message": f"Page {i} has no text layer (likely a scan). "
                                  "It can't be checked without OCR — remove the page or supply a text PDF."})
             pages.append(text)
-        meta = {k: v for k, v in (pdf.metadata or {}).items() if k in ("Author", "Creator", "Title", "Subject")
+        meta = {k: v for k, v in (pdf.metadata or {}).items() if k in ("Author", "Title", "Subject")  # Creator/Producer name software
                 and isinstance(v, str) and v.strip()}
     text = "\n\n".join(pages)
     if meta:

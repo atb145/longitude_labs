@@ -37,6 +37,12 @@ recognizers:
     patterns:
       # $4.75M · $68.7 billion · $750,000 · $95.00 per share   (tiny amounts like par values are skipped)
       - '(?P<v>\$\s?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?:\s?(?:million|billion|thousand|[MBK]|bn|mm)\b)?|\$\s?\d+(?:\.\d+)?\s?(?:million|billion|thousand|[MBK]|bn|mm)\b|\$\s?\d{2,}(?:\.\d+)?(?=\s+per\s+share))'
+  - entity: PERSON
+    score: 0.95
+    name: signature_line
+    patterns:
+      # "/s/ Keith R. Dolliver" — whoever signs is a person, whatever the language model thinks
+      - '/s/[ \t]*(?P<v>[A-Z][a-z]+(?:[ \t]+[A-Z]\.)*(?:[ \t]+[A-Z][A-Za-z’''-]+){1,2})'
   - entity: SHARE_COUNT
     score: 0.9
     patterns:
@@ -44,6 +50,10 @@ recognizers:
 
 keep_list:
   terms:
+    - Privileged & Confidential
+    - Privileged and Confidential
+    - Attorney-Client Privileged
+    - Strictly Confidential
     - Press Release
     - Investor Presentation
     - IRS
@@ -56,11 +66,25 @@ keep_list:
     # Generic document furniture
     - '\b(?:Exhibit|Item|Schedule|Annex|Appendix)\s+\d+(?:\.\d+)*[A-Z]?\b'
 
+# Context tools: words around a name that make it a party to the engagement (edge case 1.1).
+party_cues:
+  after:   # right after the name
+    - '^\s*\(?\s*(?:\n\s*)?\(Exact name of registrant'
+    - '^[^.\n]{0,25}\((?:the\s+|collectively,?\s+)?[“"](?:Company|Buyer|Seller|Purchaser|Target|Parent|Merger Sub|Borrower|Lender|Client|Issuer|Registrant|Acquirer|Guarantor|Employer|Licensee|Licensor|Plaintiff|Defendant|Respondent)[”"]'
+  before:  # right before the name
+    - '(?i)(?:acquire|acquisition of|merger with|merge with|agreement with|on behalf of|our client,?|advised|represented|engaged by|counsel to|investment in|offer for|bid for|tender offer for|against)\s+(?:the\s+)?$'
+
+# Mail providers and platforms: an address there says nothing about the company (context tool: domain linking).
+generic_domains: [gmail, googlemail, yahoo, outlook, hotmail, live, msn, icloud, me, aol, protonmail, proton, gmx,
+                  mail, zoho, yandex, fastmail, sec, gov, edgar, linkedin, twitter, x, facebook, youtube, github]
+
 # Words detectors confuse with names, in any vertical.
 not_entities: [Press Release, Investor Presentation, Exhibit, Exhibits, Item, Schedule, Annex, Appendix, Form,
                Section, Rule, Act, Agreement, Registrant, Report, Current Report, Annual Report, Signatures,
                Media Relations, Investor Relations, Overview, Summary, Background, Introduction, Conclusion,
-               State, Commission File, Zip Code, Emerging Growth Company, Common Stock, Notes]
+               State, Commission File, Zip Code, Emerging Growth Company, Common Stock, Notes,
+               Privileged & Confidential, Privileged and Confidential, Confidential, Strictly Confidential,
+               Attorney-Client Privileged, Attorney Work Product, Memorandum, Draft, Deal Team]
 
 # Headline verbs and glue words that detectors attach to company names ("Microsoft Announces Partnership").
 name_noise_words: [announces, announced, reports, reported, launches, launched, acquires, acquired, completes,
