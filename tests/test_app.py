@@ -70,3 +70,25 @@ def test_old_session_is_upgraded_not_crashing():
     assert not at.exception, at.exception
     from engine import Session
     assert getattr(at.session_state.session, "VERSION", None) == Session.VERSION
+
+
+def test_release_box_lists_leaks_with_show_and_fix():
+    from engine import Session
+    txt = ("Jonathan Mercer opened the account. Mercer later cited SEC v. Mercer, 401 F.2d 833 (2d Cir. 1968) "
+           "in his defense.")
+    sess = Session.from_texts([("memo.txt", txt)])
+    sess.rights_confirmed = True
+    for k in sess.run().queue:
+        sess.decide(k, "accept")
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state.session = sess
+    at.session_state.view = "Final"
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Where the original text is still showing" in m.value for m in at.markdown)
+    show = next(b for b in at.button if b.label == "Show")
+    fix = next(b for b in at.button if b.label == "Redact it")
+    fix.click().run()
+    assert not at.exception, at.exception
+    assert "Mercer" not in at.session_state.session.run().outputs[0]
+    assert show is not None

@@ -392,3 +392,18 @@ def test_placeholder_styles(style, marker):
         assert '("")' not in out and "“”" not in out
     assert "October 2023" in out               # generalized values stay readable
     assert consistency_check(res)["leak_free"]
+
+
+def test_leaks_are_located_and_fixable():
+    # The defendant's name also sits inside a reported-case citation, which the keep list protects → a leak.
+    txt = ("Jonathan Mercer opened the account. Mercer later cited SEC v. Mercer, 401 F.2d 833 (2d Cir. 1968) "
+           "in his defense.")
+    s, res = run([("d.txt", txt)])
+    cc = consistency_check(res)
+    assert not cc["leak_free"]
+    lk = cc["leak_items"][0]
+    assert lk["text"] == "Mercer" and lk["doc"] == 0 and lk["label"]           # what, where, and what it should be
+    assert any("listed below" in b for b in s.release_blockers(res))
+    s.redact_as(lk["key"], lk["text"])                                          # the "Redact it" button
+    res2 = s.run()
+    assert consistency_check(res2)["leak_free"] and "Mercer" not in res2.outputs[0]

@@ -1148,7 +1148,8 @@ def release_check(res: Result, warnings: list[list[dict]] | None = None, rights_
     if cc["unreviewed"]:
         out.append(f"Finish review ({len(cc['unreviewed'])} open).")
     if not cc["leak_free"]:
-        out.append("Original text found in the output (see 'leaks').")
+        n = len(cc["leak_items"])
+        out.append(f"Original text still in the output ({n} place{'s' if n != 1 else ''} — listed below).")
     if not cc["all_consistent"]:
         out.append("Some entities have more than one replacement.")
     for name, ws in zip(res.names, warnings or []):
@@ -1160,7 +1161,7 @@ def release_check(res: Result, warnings: list[list[dict]] | None = None, rights_
 
 def consistency_check(res: Result) -> dict:
     """Same replacement for each entity in every document + scan outputs for leaked originals."""
-    rows = []
+    rows, leak_items = [], []
     for e in res.entities:
         per_doc: dict[int, set[str]] = defaultdict(set)
         for doc, _, _, orig in e.mentions:
@@ -1174,8 +1175,11 @@ def consistency_check(res: Result) -> dict:
                 for o in originals:
                     if o.lower() in e.replacement_for(o).lower():
                         continue  # already coarse ("$2B" → "~$2B") — the replacement contains it on purpose
-                    if len(o) >= 3 and re.search(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", out, re.IGNORECASE):
-                        leaks.append(f"{o!r} in {res.names[doc]}")
+                    hit = len(o) >= 3 and re.search(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", out, re.IGNORECASE)
+                    if hit:
+                        leaks.append(f"{hit.group()!r} in {res.names[doc]}")
+                        # the exact wording found, so "Redact it" can target it
+                        leak_items.append({"text": hit.group(), "doc": doc, "key": e.key, "label": e.label})
         rows.append({
             "registry_id": e.label,
             "entity_type": e.type,
@@ -1190,5 +1194,6 @@ def consistency_check(res: Result) -> dict:
         "rows": rows,
         "all_consistent": all(r["consistent"] for r in rows),
         "leak_free": not any(r["leaks"] for r in rows),
+        "leak_items": leak_items,   # [{"text", "doc", "key", "label"}] — where each leak is, for the UI
         "unreviewed": unreviewed,
     }

@@ -152,6 +152,10 @@ def inject_css() -> None:
     .orig { border-radius:.3rem; padding:0 .1em; cursor:help; }
     .orig.kept { background:transparent !important; border-bottom:1px dotted var(--dim); }
     .flag { border-bottom:2px dashed #1DB5DA; cursor:help; }
+    mark.leak { background: color-mix(in srgb, #e0a050 45%, transparent); color: inherit; padding: 0 .15em;
+                border-radius: .25rem; outline: 1.5px solid #c27a1a; cursor: help; }
+    mark.leak.pulse { animation: leakpulse 1.2s ease-in-out 2; }
+    @keyframes leakpulse { 50% { outline-width: 4px; } }
     .legend { display:flex; flex-wrap:wrap; gap:.4rem 1rem; font-size:.8rem; color:var(--dim); margin:.4rem 0 1rem; align-items:center; }
 
     .ok { color:#2f8f62; } .warn { color:#c27a1a; }
@@ -162,6 +166,8 @@ def inject_css() -> None:
         font-weight:500; letter-spacing:0; border-radius:999px; box-shadow:none; padding:.5rem .9rem; white-space:nowrap; }
     .stButton button[kind="primary"], .stDownloadButton button[kind="primary"], .stFormSubmitButton button {
         background:#A7DAEF !important; color:#272727 !important; border:1px solid #A7DAEF !important; }
+    .stButton button:disabled, .stDownloadButton button:disabled, .stFormSubmitButton button:disabled {
+        opacity: .4 !important; cursor: not-allowed !important; filter: grayscale(.4); }
     .stButton button[kind="primary"]:hover, .stDownloadButton button[kind="primary"]:hover,
     .stFormSubmitButton button:hover { background:#8fcbe4 !important; border-color:#8fcbe4 !important; }
     [data-testid="stFileUploaderDropzone"] { border:1px dashed var(--rule); background:transparent; border-radius:1rem; }
@@ -766,9 +772,15 @@ def review(sess: Session, res) -> None:
 
 
 # --------------------------------------------------------------------------- documents
-def _plain(text: str, line: list[int]) -> str:
-    """Escape text and drop a line anchor after each newline so two panes can scroll in step."""
-    parts = html.escape(text).split("\n")
+def _plain(text: str, line: list[int], leaks: list[str] | None = None) -> str:
+    """Escape text and drop a line anchor after each newline so two panes can scroll in step. Leaked originals
+    (text that should have been redacted) are highlighted."""
+    escaped = html.escape(text)
+    for lk in leaks or []:
+        escaped = re.sub(r"(?<![\w-])(" + re.escape(html.escape(lk)) + r")(?![\w-])",
+                         r'<mark class="leak" title="Original text still showing — should be redacted">\1</mark>',
+                         escaped, flags=re.IGNORECASE)
+    parts = escaped.split("\n")
     out = parts[0]
     for p in parts[1:]:
         line[0] += 1
@@ -793,8 +805,10 @@ def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False) -
     "original" (source text with every detected span highlighted, hover = its replacement)."""
     text, out, pos, line = res.texts[doc], [], 0, [0]
     by_key = {e.key: e for e in res.entities}
+    leaks = ([lk["text"] for lk in consistency_check(res)["leak_items"] if lk["doc"] == doc]
+             if version == "anonymized" else [])
     for g in res.segments[doc]:
-        out.append(_plain(text[pos:g.start], line))
+        out.append(_plain(text[pos:g.start], line, leaks))
         if g.kind == "flag":
             changed = g.status in ("accepted", "edited")
             if version == "original":
@@ -824,7 +838,7 @@ def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False) -
             if edit and version == "anonymized":
                 out.append(_pencil("E|" + g.ref))
         pos = g.end
-    out.append(_plain(text[pos:], line))
+    out.append(_plain(text[pos:], line, leaks))
     return "".join(out)
 
 
@@ -878,6 +892,17 @@ export default function (component) {
     p.scrollTop = window[k] || 0;
     p.addEventListener('scroll', () => { window[k] = p.scrollTop; fab.style.display = 'none'; }, { passive: true });
   });
+  // "Show" from the release check: scroll the anonymized pane to the leaked text.
+  if (data.leak) {
+    const target = Array.from(root.querySelectorAll('.pane[data-version="anonymized"] mark.leak'))
+      .find((m) => m.textContent.toLowerCase() === data.leak.toLowerCase())
+      || root.querySelector('.pane[data-version="anonymized"] mark.leak');
+    if (target) {
+      const pane = target.closest('.pane');
+      pane.scrollTop = Math.max(0, target.offsetTop - pane.offsetTop - 80);
+      target.classList.add('pulse');
+    }
+  }
   if (!data.sync || panes.length !== 2) return;
   const sameDoc = panes[0].dataset.doc === panes[1].dataset.doc;
   let lock = null;
@@ -909,6 +934,18 @@ export default function (component) {
 doc_panes = st.components.v2.component("doc_panes", js=DOC_JS, isolate_styles=False)
 
 
+def show_leak(lk: dict) -> None:
+    """Jump to the document with the leak; the anonymized pane highlights it and scrolls to it."""
+    st.session_state.update(view="Documents", doc_pick=lk["doc"], doc_layout="Side by side",
+                            leak_focus=lk["text"])
+
+
+def fix_leak(sess: Session, lk: dict) -> None:
+    """Add the leaked wording to its entity, so it gets the same pseudonym everywhere."""
+    sess.redact_as(lk["key"], lk["text"])
+    st.session_state.focus_note = f"“{lk['text']}” is now redacted as {lk['label']} everywhere"
+
+
 def release_box(sess: Session, res) -> list[str]:
     """Release gate: downloads stay off until every check passes."""
     blockers = sess.release_blockers(res)
@@ -920,6 +957,22 @@ def release_box(sess: Session, res) -> list[str]:
     if blockers:
         st.markdown('<div class="gate"><b>Before download</b><ul>'
                     + "".join(f"<li>{html.escape(b)}</li>" for b in blockers) + "</ul></div>", unsafe_allow_html=True)
+        leaks = consistency_check(res)["leak_items"]
+        if leaks:
+            st.markdown('<p class="ll-sub">Where the original text is still showing</p>', unsafe_allow_html=True)
+            seen = set()
+            for i, lk in enumerate(leaks):
+                if (lk["text"].lower(), lk["doc"]) in seen:
+                    continue
+                seen.add((lk["text"].lower(), lk["doc"]))
+                c1, c2, c3 = st.columns([3, 1, 1.2], vertical_alignment="center")
+                c1.markdown(f'<span class="form">{html.escape(lk["text"])}</span> '
+                            f'<span class="dim">in {html.escape(short(res.names[lk["doc"]], 28))} · '
+                            f'should be {html.escape(lk["label"])}</span>', unsafe_allow_html=True)
+                c2.button("Show", key=f"leak_show_{st.session_state.get('view', '')}_{i}", width="stretch",
+                          on_click=show_leak, args=(lk,))
+                c3.button("Redact it", key=f"leak_fix_{st.session_state.get('view', '')}_{i}", width="stretch",
+                          type="primary", on_click=fix_leak, args=(sess, lk))
     return blockers
 
 
@@ -1094,7 +1147,8 @@ def documents(sess: Session, res) -> None:
         f'<div class="pane doc" data-doc="{d}" data-version="{v}">{render_doc(res, d, v, edit)}</div></div>'
         for d, v in panes)
     result = doc_panes(data={"html": f'<div class="panes n{len(panes)}">{body}</div>', "sync": bool(sync),
-                             "edit": edit}, key="doc_panes", on_action_change=lambda: None)
+                             "edit": edit, "leak": st.session_state.pop("leak_focus", "")},
+                       key="doc_panes", on_action_change=lambda: None)
     action = json.loads(result.action) if getattr(result, "action", None) else None
     if action and action.get("t") != st.session_state.get("last_action"):
         st.session_state.last_action = action.get("t")
@@ -1166,12 +1220,12 @@ def final_view(sess: Session, res) -> None:
                     unsafe_allow_html=True)
         st.button("Approve the rest in Documents →", key="final_to_docs",
                   on_click=lambda: st.session_state.update(view="Documents", doc_pick=todo[0]))
+    blocked = bool(release_box(sess, res))   # always visible, so leaks surface before anything is approved
     if not items:
         st.info("Nothing approved yet.")
         st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
         audit_trail(sess, res)
         return
-    blocked = bool(release_box(sess, res))
     names = [res.names[d] for d, _ in items]
     outputs = [a["output"] for _, a in items]
     combined = "\n\n".join(f"{'=' * 72}\n{name}\n{'=' * 72}\n\n{out}" for name, out in zip(names, outputs))
@@ -1211,7 +1265,7 @@ def audit_trail(sess: Session, res) -> None:
         (cc["all_consistent"], f"{n} entities · each has one replacement across every document"
          if cc["all_consistent"] else "Some entities have differing replacements — see table"),
         (cc["leak_free"], "No original text found in the anonymized output" if cc["leak_free"]
-         else "Original text still present — see 'leaks' column"),
+         else "Original text still present — see “Where the original text is still showing” above"),
         (not cc["unreviewed"], "Review queue complete" if not cc["unreviewed"]
          else f"{len(cc['unreviewed'])} item(s) still unreviewed (proposed replacements applied)"),
     ]
