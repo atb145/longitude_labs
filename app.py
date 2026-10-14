@@ -505,6 +505,10 @@ def sidebar(sess: Session, res) -> None:
                       help="Defendant, Buyer, 'Address of principal executive offices'… instead of Company A.")
             date_modes = {"month_year": "Month + year", "shifted": "Shifted (same gaps)",
                           "relative": "Relative (Day 0, Day 6…)", "exact": "Exact"}
+            styles = {"labels": "Labels (Person A, Acquirer…)", "redacted": "[REDACTED]", "remove": "Remove the text"}
+            st.session_state.setdefault("t_style", s.get("placeholder_style", "labels"))
+            st.selectbox("Placeholders", list(styles), key="t_style", format_func=styles.get,
+                         help="Labels keep the link between mentions. [REDACTED] or removing gives nothing back.")
             st.session_state.setdefault("t_dates", s.get("date_mode", "month_year"))
             st.selectbox("Dates", list(date_modes), key="t_dates", format_func=date_modes.get)
             pub_modes = {"review": "Ask if it's a party", "keep": "Always keep", "redact": "Always redact"}
@@ -526,6 +530,7 @@ def sidebar(sess: Session, res) -> None:
                         st.error(str(exc))
                 st.caption("Your decisions are kept.")
         s["role_labels"] = st.session_state.t_roles
+        s["placeholder_style"] = st.session_state.t_style
         s["date_mode"] = st.session_state.t_dates
         s["public_companies"] = st.session_state.t_pub
         s["generalize_addresses"] = st.session_state.t_addr
@@ -796,7 +801,8 @@ def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False) -
                 tip = f"Becomes: {g.replacement}" if changed else f"Flagged relationship phrase ({g.status})"
                 out.append(f'<span class="flag" title="{html.escape(tip)}">{_plain(g.original, line)}</span>')
             elif changed:
-                out.append(f'<span class="chip t-FLAG" title="Original: {html.escape(g.original)}">'
+                out.append(f'<span class="chip t-FLAG" title="Original: {html.escape(g.original)}" '
+                           f'data-orig="{html.escape(" ".join(g.original.split()), quote=True)}">'
                            f'{html.escape(g.replacement)}</span>{_anchors(g.original, line)}')
             else:
                 out.append(f'<span class="flag" title="Flagged relationship phrase ({g.status})">{_plain(g.original, line)}</span>')
@@ -810,7 +816,8 @@ def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False) -
                 out.append(f'<span class="orig t-{color_type(g.type)} {cls}" title="{html.escape(tip)}">{_plain(g.original, line)}</span>')
             elif e.is_redacted:
                 tip = f"Original: {g.original} · {e.label} · {e.status}"
-                out.append(f'<span class="chip t-{color_type(g.type)} {cls}" title="{html.escape(tip)}">'
+                out.append(f'<span class="chip t-{color_type(g.type)} {cls}" title="{html.escape(tip)}" '
+                           f'data-orig="{html.escape(" ".join(g.original.split()), quote=True)}">'
                            f'{html.escape(g.replacement)}</span>{_anchors(g.original, line)}')
             else:
                 out.append(f'<span class="chip kept" title="Kept · {html.escape(e.rule)}">{_plain(g.original, line)}</span>')
@@ -841,7 +848,18 @@ export default function (component) {
   root.onmouseup = () => setTimeout(() => {
     if (!data.edit) return;
     const sel = window.getSelection();
-    const text = sel ? sel.toString().replace(/✎/g, '').trim() : '';
+    // Read the selection with every placeholder swapped back to its original words, so a selection that runs
+    // across a chip ("2701 Olympic Boulevard … ZIP 1") becomes the real phrase.
+    let text = '';
+    if (sel && sel.rangeCount) {
+      const frag = sel.getRangeAt(0).cloneContents();
+      frag.querySelectorAll('.chip-edit').forEach((n) => n.remove());
+      frag.querySelectorAll('[data-orig]').forEach((n) => n.replaceWith(document.createTextNode(n.dataset.orig)));
+      let anc = sel.getRangeAt(0).commonAncestorContainer;
+      anc = anc.nodeType === 1 ? anc : anc.parentElement;
+      const inside = anc && anc.closest ? anc.closest('[data-orig]') : null;
+      text = (inside ? inside.dataset.orig : frag.textContent).replace(/✎/g, '').replace(/\\s+/g, ' ').trim();
+    }
     const node = sel && sel.anchorNode ? (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement) : null;
     const pane = node ? node.closest('.pane') : null;
     if (!text || text.length < 2 || !pane || !root.contains(pane)) { fab.style.display = 'none'; return; }

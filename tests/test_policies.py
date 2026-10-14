@@ -347,3 +347,48 @@ def test_renaming_an_address_overrides_city_state():
     s.rename(addr.key, "Address 1")
     out = s.run().outputs[0]
     assert "Address 1" in out and "Redmond" not in out
+
+
+# ---------------------------------------------------------------- Activision 8-K excerpt
+@pytest.fixture(scope="module")
+def atvi():
+    return run([("atvi.txt", (FIX / "atvi_8k_excerpt.txt").read_text())])
+
+
+def test_full_company_suffix_is_covered(atvi):
+    _, res = atvi
+    out = res.outputs[0]
+    assert "oration" not in out and "Microsoft" not in out
+    assert "INC." not in out and "Activision" not in out.title()
+
+
+def test_address_with_building_is_one_redaction(atvi):
+    _, res = atvi
+    out = res.outputs[0]
+    for part in ("2701", "Olympic", "Building B", "Santa Monica", "90404"):
+        assert part not in out, part
+
+
+def test_delisted_ticker_found_by_context(atvi):
+    _, res = atvi
+    assert "ATVI" not in res.outputs[0]
+
+
+def test_signatory_title_is_redacted(atvi):
+    _, res = atvi
+    out = res.outputs[0]
+    assert "Corporate Governance" not in out and "Corporate Secretary" not in out
+    assert "Ellenberg" not in out
+
+
+@pytest.mark.parametrize("style,marker", [("redacted", "[REDACTED]"), ("remove", None)])
+def test_placeholder_styles(style, marker):
+    s, res = run([("atvi.txt", (FIX / "atvi_8k_excerpt.txt").read_text())], placeholder_style=style)
+    out = res.outputs[0]
+    assert "Microsoft" not in out and "Company A" not in out and "Person A" not in out
+    if marker:
+        assert marker in out
+    else:
+        assert '("")' not in out and "“”" not in out
+    assert "October 2023" in out               # generalized values stay readable
+    assert consistency_check(res)["leak_free"]
