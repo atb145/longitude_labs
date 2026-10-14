@@ -40,6 +40,8 @@ class Policy:
     party_cues: dict = field(default_factory=dict)     # {"before": [regex], "after": [regex]}
     generic_domains: set[str] = field(default_factory=set)
     role_rules: list[dict] = field(default_factory=list)  # {"where", "regex", "role", "types"}
+    tickers: dict[str, str] = field(default_factory=dict)  # "MSFT" -> "MICROSOFT CORP"
+    ticker_stopwords: set[str] = field(default_factory=set)
 
     def spec(self, entity_type: str) -> dict:
         return self.entities.get(entity_type, {"action": "ignore"})
@@ -126,6 +128,20 @@ def _merge_base(raw: dict) -> dict:
     return out
 
 
+def _load_tickers(rel: str | None) -> dict[str, str]:
+    if not rel:
+        return {}
+    path = (POLICY_DIR / rel).resolve()
+    if not str(path).startswith(str(POLICY_DIR.resolve())) or not path.exists():
+        return {}
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        tick, _, title = line.partition("\t")
+        if tick and title and tick.isalpha():
+            out.setdefault(tick.upper(), title.strip())
+    return out
+
+
 def parse_policy(raw: dict, fallback_name: str) -> Policy:
     raw = _merge_base(raw)
     recognizers = [dict(r) for r in raw.get("recognizers", [])]
@@ -174,6 +190,8 @@ def parse_policy(raw: dict, fallback_name: str) -> Policy:
         nicknames={k.lower(): [v.lower() for v in vs] for k, vs in (raw.get("nicknames") or {}).items()},
         party_cues={k: [re.compile(p) for p in v] for k, v in (raw.get("party_cues") or {}).items()},
         generic_domains={d.lower() for d in raw.get("generic_domains") or []},
+        tickers=_load_tickers(raw.get("ticker_list")),
+        ticker_stopwords={t.upper() for t in raw.get("ticker_stopwords") or []},
         role_rules=[{"where": r.get("where", "after"), "regex": re.compile(r["pattern"]), "role": r.get("role"),
                      "types": set(r.get("types") or ["PERSON", "ORGANIZATION"])} for r in raw.get("role_labels") or []],
         quasi={"min_categories": int((raw.get("quasi_identifiers") or {}).get("min_categories", 3)),

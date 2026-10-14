@@ -56,6 +56,10 @@ def inject_css() -> None:
     .ll-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:.4rem; }
     .ll-word { font-family:var(--serif); font-size:1.35rem; font-weight:500; }
     [data-testid="stSidebar"][aria-expanded="true"] { min-width: 300px; }  /* closed sidebar must free its space */
+    /* Layout reacts to the space the content actually has (sidebar open or closed), not the window */
+    [data-testid="stMainBlockContainer"] { container-type: inline-size; }
+    .ll-head { flex-wrap: wrap; row-gap: .35rem; }
+    .ll-word, .ll-coord { white-space: nowrap; }
     /* Prose stays at a readable measure instead of running the full page width */
     [data-testid="stCaptionContainer"], [data-testid="stAlert"], [data-testid="stAlertContainer"], .stAlert, .ll-note, .gate,
     [data-testid="stCheckbox"] label, [data-testid="stExpanderDetails"] p, .edit-hint { max-width: 62ch; }
@@ -162,6 +166,29 @@ def inject_css() -> None:
     .stFormSubmitButton button:hover { background:#8fcbe4 !important; border-color:#8fcbe4 !important; }
     [data-testid="stFileUploaderDropzone"] { border:1px dashed var(--rule); background:transparent; border-radius:1rem; }
     [data-testid="stSidebar"] .ll-label { margin-top:1.2rem; }
+    /* narrow content area (small window or sidebar open) — last, so it wins */
+    @container (max-width: 760px) {
+      .ll-coord { display: none; }
+      .steps { grid-template-columns: 1fr; }
+      .panes.n2 { grid-template-columns: 1fr; }
+      .kv { grid-template-columns: 1fr; gap: .1rem 0; }
+      .kv dt { padding-top: .55rem; }
+      .card { padding: 1.1rem 1.15rem .9rem; }
+      .card-ctx { font-size: 1.08rem; }
+      .card-top { flex-direction: column; align-items: flex-start; gap: .35rem; text-align: left; }
+      [data-testid="stButtonGroup"] button { padding: .3rem .6rem; font-size: .82rem; }
+      .hero h1 { font-size: 2.1rem !important; }
+      /* control rows wrap instead of truncating their labels */
+      [data-testid="stHorizontalBlock"] { flex-wrap: wrap; row-gap: .5rem; }
+      [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex: 1 1 10rem !important; min-width: min(100%, 10rem); }
+      .st-key-prev_doc, .st-key-next_doc { min-width: 3rem; }
+      [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:has(.st-key-prev_doc),
+      [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:has(.st-key-next_doc) { flex: 0 0 3.2rem !important; min-width: 3.2rem; }
+    }
+    @container (max-width: 520px) {
+      .ll-word .dim { display: none; }
+      .ll-word { font-size: 1.1rem; }
+    }
     """
     for t, rgb in TYPE_COLORS.items():
         css += f".chip.t-{t} {{ border-color: rgba({rgb},.85); background: rgba({rgb},.16); }}\n"

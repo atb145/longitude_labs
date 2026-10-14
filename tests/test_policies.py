@@ -291,3 +291,39 @@ def test_rename_label_everywhere_and_unique():
     other = entity(res2, "Harborview")
     with pytest.raises(ValueError):
         s.rename(other.key, "receiving broker")      # labels stay unique (case-insensitive)
+
+
+# ---------------------------------------------------------------- tickers, share prices, links
+def test_bare_ticker_from_sec_list_is_redacted_but_not_ordinary_words():
+    txt = "Common stock MSFT NASDAQ. Shares of MSFT fell. IT and ALL staff ON the floor were told NOW."
+    _, res = run([("d.txt", txt)])
+    out = res.outputs[0]
+    assert "MSFT" not in out
+    for word in ("IT", "ALL", "ON", "NOW"):
+        assert re.search(rf"\b{word}\b", out), word
+
+
+def test_ticker_links_to_its_company():
+    _, res = run([("d.txt", "Analysts rate MSFT a buy. Microsoft shipped a new product.")], public_companies="redact")
+    assert "Microsoft" not in res.outputs[0]
+
+
+def test_share_prices_are_redacted_with_context():
+    txt = ("Common stock, $0.00000625 par value per share. The offer was $95.00 per share. "
+           "The stock fell 9% on the news. It closed at $296.03. Revenue was $51.7 billion.")
+    _, res = run([("d.txt", txt)])
+    out = res.outputs[0]
+    for price in ("$0.00000625", "$95.00", "$296.03"):
+        assert price not in out, price
+    assert "~$50 billion" in out              # a headline figure is rounded, not treated as a price
+
+
+def test_record_links_redacted_general_links_reviewed():
+    rec = "https://www.sec.gov/Archives/edgar/data/789019/000119312522010667/d301984d8k.htm"
+    txt = f"See {rec} for the filing, and https://www.sec.gov/investor for general guidance."
+    _, res = run([("d.txt", txt)])
+    links = {e.canonical: e for e in res.entities if e.type == "URL"}
+    assert links[rec].status == "auto" and rec not in res.outputs[0]
+    general = links["https://www.sec.gov/investor"]
+    assert general.status == "pending"
+    assert "guidance." in res.outputs[0]       # the sentence's full stop isn't swallowed by the link

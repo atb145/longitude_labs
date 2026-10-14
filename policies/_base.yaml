@@ -11,12 +11,11 @@ settings:
 
 entities:
   URL:
-    title: Websites and domains
+    title: Links and websites
     action: redact
-    label: "Website {1}"
-    rule: always_redact.websites
-    reason: A website names the company.
-    auto: true
+    label: "Link {1}"
+    rule: always_redact.links
+    reason: Points to the record or the party.
   MONEY:
     title: Headline figures → rounded
     action: generalize
@@ -37,13 +36,19 @@ recognizers:
     score: 0.9
     patterns:
       # $4.75M · $68.7 billion · $750,000 · $95.00 per share   (tiny amounts like par values are skipped)
-      - '(?P<v>\$\s?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?:\s?(?:million|billion|thousand|[MBK]|bn|mm)\b)?|\$\s?\d+(?:\.\d+)?\s?(?:million|billion|thousand|[MBK]|bn|mm)\b|\$\s?\d{2,}(?:\.\d+)?(?=\s+per\s+share))'
+      - '(?P<v>\$\s?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?:\s?(?:million|billion|thousand|[MBK]|bn|mm)\b)?|\$\s?\d+(?:\.\d+)?\s?(?:million|billion|thousand|[MBK]|bn|mm)\b)'
   - entity: PERSON
     score: 0.95
     name: signature_line
     patterns:
       # "/s/ Keith R. Dolliver" — whoever signs is a person, whatever the language model thinks
       - '/s/[ \t]*(?P<v>[A-Z][a-z]+(?:[ \t]+[A-Z]\.)*(?:[ \t]+[A-Z][A-Za-z’''-]+){1,2})'
+  # Links: Presidio's URL detector misses long paths; this catches full http(s) links.
+  - entity: URL
+    score: 0.9
+    name: full_link
+    patterns:
+      - '(?P<v>\bhttps?://[^\s<>"”)\]]+[^\s<>"”)\].,;:])'
   - entity: SHARE_COUNT
     score: 0.9
     patterns:
