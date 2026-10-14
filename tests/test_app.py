@@ -147,3 +147,24 @@ def test_stale_engine_module_is_reloaded():
         sys_engine = __import__("sys").modules["engine"]
         if sys_engine._CODE_VERSION == "stale-build":
             sys_engine._CODE_VERSION = real
+
+
+def test_rules_from_the_last_set_are_used_again():
+    # "Start over" stores the session's rules in carry_rules (checked in the browser; AppTest can't click inside
+    # a dialog). The home page then offers them first and the next set starts with them.
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    sess = at.session_state.session
+    sess.settings["placeholder_style"] = "redacted"
+    sess.add_party("Northwind Holdings", "ORGANIZATION")
+    carried = sess.export_rules(sess.policy.name)
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state.carry_rules = carried
+    at.run()
+    assert not at.exception
+    assert at.session_state.rules_pick == "Your rules from the last set"
+    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    assert not at.exception
+    again = at.session_state.session
+    assert again.settings["placeholder_style"] == "redacted"
+    assert any(p["name"] == "Northwind Holdings" for p in again.ops["parties"])

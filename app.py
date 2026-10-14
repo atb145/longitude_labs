@@ -146,6 +146,11 @@ def inject_css() -> None:
     .pane-edit { font:inherit; font-size:.78rem; font-weight:500; cursor:pointer; border-radius:999px; padding:.18rem .75rem;
                  border:1px solid var(--rule); background:transparent; color:inherit; }
     .pane-edit:hover, .pane-edit.on { background:var(--soft); color:#272727; border-color:var(--soft); }
+    .tipcard { position: fixed; z-index: 2000; max-width: 300px; padding: .5rem .7rem; border-radius: .6rem;
+               background: #272727; color: #F7F3EA; font-size: .8rem; line-height: 1.45; pointer-events: none;
+               box-shadow: 0 4px 16px rgba(0,0,0,.2); }
+    .tipcard span { color: #A7DAEF; }
+    [data-ref] { cursor: pointer; }
     .chip-edit { display:inline-block; font-size:.78em; margin-left:.12em; padding:0 .2em; cursor:pointer; color:var(--dim);
                  border-radius:.3rem; vertical-align:baseline; user-select:none; }
     .chip-edit:hover { background:var(--soft); color:#272727; }
@@ -179,6 +184,7 @@ def inject_css() -> None:
         animation: ll-fade .2s .25s both, ll-spin .8s linear infinite; }
     @keyframes ll-spin { to { transform: rotate(360deg); } }
     @keyframes ll-fade { from { opacity: 0; } to { opacity: 1; } }
+    .st-key-rules_lib_host { display: none; }
     .count-top { font-size:.85rem; color:var(--dim); margin:0 0 .15rem; }
     .count-top b { color:var(--fg); font-weight:500; }
     .doc-count b { color:var(--fg); }
@@ -291,7 +297,14 @@ def start_session(files: list[tuple[str, bytes]], policy, rights: bool = False) 
 
 
 def reset() -> None:
-    for k in [k for k in st.session_state if k.startswith(("b_", "t_"))] + ["session", "view", "editing", "focus", "edit_mode", "doc_pick", "last_action", "rights_ok"]:
+    sess = st.session_state.get("session")
+    if sess is not None and hasattr(sess, "export_rules"):
+        try:  # "Start over" clears the files, not your rules
+            st.session_state.carry_rules = sess.export_rules(
+                f"{sess.policy.name}", f"Your settings and names from the last set ({sess.policy.name}).")
+        except Exception:  # noqa: BLE001 — never block a reset
+            pass
+    for k in [k for k in st.session_state if k.startswith(("b_", "t_"))] + ["session", "view", "editing", "focus", "edit_mode", "doc_pick", "last_action", "rights_ok", "rules_pick", "rules_touched"]:
         st.session_state.pop(k, None)
 
 
@@ -490,12 +503,44 @@ def home() -> None:
     rights = st.checkbox("I have the right to share these files, including for my client and any counterparties.",
                          key="rights_ok", help="Anonymizing doesn't cure privilege, NDAs or patient confidentiality.")
     policies = available_policies()
-    names = list(policies)
-    pol = load_policy(policies["Finance" if "Finance" in names else names[0]])
-    with st.expander(f"Advanced: rules for your industry ({pol.name})"):
-        policy_name = st.selectbox("Rules", names, index=names.index(pol.name) if pol.name in names else 0)
-        pol = load_policy(policies[policy_name])
-        st.caption(pol.raw.get("description", ""))
+    library = st.session_state.get("my_rules") or {}
+    choices: dict[str, tuple[str, str]] = {}           # label → (kind, value)
+    if st.session_state.get("carry_rules"):
+        choices["Your rules from the last set"] = ("yaml", st.session_state.carry_rules)
+    for nm in sorted(library):
+        choices[f"★ {nm}"] = ("yaml", library[nm]["yaml"])
+    for nm in policies:
+        choices[f"{nm} (built-in)"] = ("file", nm)
+    labels_ = list(choices)
+    if not st.session_state.get("rules_touched"):  # default: last set's rules, else your newest saved rules
+        newest = max(library, key=lambda nm: library[nm].get("at", ""), default=None)
+        st.session_state.rules_pick = ("Your rules from the last set" if st.session_state.get("carry_rules")
+                                       else f"★ {newest}" if newest else labels_[0])
+    if st.session_state.get("rules_pick") not in choices:
+        st.session_state.rules_pick = labels_[0]
+
+    def load_choice(lbl: str):
+        kind, value = choices[lbl]
+        return load_policy(policies[value]) if kind == "file" else load_policy_text(value, lbl.lstrip("★ ").strip())
+
+    try:
+        pol = load_choice(st.session_state.rules_pick)
+    except ValueError:
+        pol = load_policy(policies[next(iter(policies))])
+    with st.expander(f"Rules: {pol.name}"):
+        st.selectbox("Rules", labels_, key="rules_pick", on_change=lambda: st.session_state.update(rules_touched=True),
+                     help="★ = saved in My rules (this browser). Save rules from ⚙ Settings once you've set them up.")
+        pol = load_choice(st.session_state.rules_pick)
+        st.caption(pol.raw.get("description", "") + (f" · {len(pol.known_parties)} name(s) always hidden"
+                                                     if pol.known_parties else ""))
+        if library:
+            st.markdown('<p class="ll-sub">My rules (this browser)</p>', unsafe_allow_html=True)
+            for i, nm in enumerate(sorted(library)):
+                r1, r2 = st.columns([5, 1], vertical_alignment="center")
+                r1.markdown(f'★ {html.escape(nm)} <span class="dim">· saved {html.escape(library[nm].get("at", ""))}'
+                            '</span>', unsafe_allow_html=True)
+                r2.button("×", key=f"lib_rm_{i}", help=f"Delete “{nm}” from My rules",
+                          on_click=library_command, args=("delete", nm))
         custom = st.file_uploader("Upload your own rules file (.yaml)", type=["yaml", "yml"], key="policy_upload")
         if custom is not None:
             try:
@@ -649,13 +694,18 @@ def sidebar(sess: Session, res) -> None:
             st.selectbox("Public companies", list(pub_modes), key="t_pub", format_func=pub_modes.get)
             st.session_state.setdefault("t_addr", s.get("generalize_addresses", True))
             st.toggle("Addresses → city, state", key="t_addr", help="When the document gives no caption.")
+            with st.popover("Save these rules", width="stretch"):
+                save_rules_panel(sess)
             with st.popover("Change rules (policy pack)", width="stretch"):
                 policies = available_policies()
-                pick = st.selectbox("Built-in pack", list(policies), key="swap_pick")
+                library = st.session_state.get("my_rules") or {}
+                packs = [f"★ {nm}" for nm in sorted(library)] + list(policies)
+                pick = st.selectbox("Rules", packs, key="swap_pick", help="★ = saved in My rules (this browser)")
                 up = st.file_uploader("Or upload (.yaml)", type=["yaml", "yml"], key="swap_upload")
                 if st.button("Apply", width="stretch", key="swap_apply"):
                     try:
                         pol = (load_policy_text(up.getvalue().decode("utf-8"), Path(up.name).stem) if up
+                               else load_policy_text(library[pick[2:]]["yaml"], pick[2:]) if pick.startswith("★ ")
                                else load_policy(policies[pick]))
                         swap_policy(sess, pol)
                         st.rerun()
@@ -686,32 +736,37 @@ def sidebar(sess: Session, res) -> None:
                     st.toggle(title, key=f"b_{bid}", help=help_ or None)
         s["disabled"] = [bid for items in groups.values() for bid, _, _ in items if not st.session_state[f"b_{bid}"]]
 
-        # ---- Entities
+        # ---- Names & labels: filter (All · To review · by type), alphabetical
+        natural = lambda v: [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", v.lower())]  # Amount 2 before 10
+        alpha = lambda items: sorted(items, key=lambda x: (natural(x.label), x.canonical.lower()))
         by_type: dict[str, list] = {}
         for e in res.entities:
             by_type.setdefault(e.type, []).append(e)
         focus_type = next((e.type for e in res.entities if e.key == focus), None)
         with st.expander(f"Names & labels ({len(res.entities)})", expanded=bool(focus_type)):
             pending = [e for e in res.entities if e.status == "pending"]
-            options = (["__review__"] if pending else []) + list(by_type)
+            options = ["__all__"] + (["__review__"] if pending else []) + sorted(by_type, key=type_name)
             if focus_type and st.session_state.get("_ent_focus_seen") != focus:
-                st.session_state.ent_type = focus_type          # jump to a just-split/merged entity once
+                st.session_state.ent_type = focus_type          # jump to a just-split/merged/shown name once
                 st.session_state._ent_focus_seen = focus
             if st.session_state.get("ent_type") not in options:
-                st.session_state.ent_type = options[0] if options else None
+                st.session_state.ent_type = "__all__"
             eq = st.text_input("Find a name", key="ent_search", label_visibility="collapsed",
                                placeholder="🔍 Find a name or label…").strip().lower()
             if eq:
-                found = [e for e in res.entities if eq in e.label.lower() or eq in e.canonical.lower()
-                         or any(eq in m[3].lower() for m in e.mentions)]
-                st.caption(f"{len(found)} match{'es' if len(found) != 1 else ''}" if found else "No entity matches.")
-                for e in found[:30]:
+                found = alpha(e for e in res.entities if eq in e.label.lower() or eq in e.canonical.lower()
+                              or any(eq in m[3].lower() for m in e.mentions))
+                st.caption(f"{len(found)} match{'es' if len(found) != 1 else ''}" if found else "No name matches.")
+                for e in found[:40]:
                     entity_popover(sess, res, e, focus)
-            elif options:
+            else:
                 pick = st.selectbox("Show", options, key="ent_type", label_visibility="collapsed",
-                                    format_func=lambda t: f"To review ({len(pending)})" if t == "__review__"
+                                    format_func=lambda t: f"Show all ({len(res.entities)})" if t == "__all__"
+                                    else f"Needs a look ({len(pending)})" if t == "__review__"
                                     else f"{type_name(t)} ({len(by_type[t])})")
-                for e in (pending if pick == "__review__" else by_type.get(pick, [])):
+                shown = (res.entities if pick == "__all__" else pending if pick == "__review__"
+                         else by_type.get(pick, []))
+                for e in alpha(shown):
                     entity_popover(sess, res, e, focus)
 
         st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
@@ -750,7 +805,8 @@ def add_documents_dialog(sess: Session) -> None:
 
 @st.dialog("Start over?")
 def confirm_start_over() -> None:
-    st.write("This clears every file and every decision. Download what you need first.")
+    st.write("This clears every file and every decision. Download what you need first. Your settings and "
+             "names to always hide carry over to the next set.")
     c1, c2 = st.columns(2)
     if c1.button("Yes, start over", type="primary", width="stretch"):
         reset()
@@ -996,57 +1052,62 @@ def _anchors(text: str, line: list[int]) -> str:
     return out
 
 
-def _pencil(ref: str) -> str:
-    return f'<span class="chip-edit" data-ref="{html.escape(ref, quote=True)}" title="Change or remove this redaction">✎</span>'
+def _tip(ref: str, title: str, line2: str, line3: str) -> str:
+    """Attributes for the hover card (shown by DOC_JS) — and data-ref makes the highlight clickable to edit."""
+    a = lambda v: html.escape(" ".join(str(v).split()), quote=True)
+    return f'data-ref="{a(ref)}" data-tip-title="{a(title)}" data-tip-l2="{a(line2)}" data-tip-l3="{a(line3)}"'
 
 
 def render_doc(res, doc: int, version: str = "anonymized", edit: bool = False, query: str = "") -> str:
-    """HTML for one document. ``version`` is "anonymized" (placeholder chips, hover = original) or
-    "original" (source text with every detected span highlighted, hover = its replacement)."""
+    """HTML for one document. ``version`` is "anonymized" (labels) or "original" (source text with every detected
+    span highlighted). Every highlight shows a hover card (what it is, what it was or becomes) and opens
+    'Change label' when clicked."""
     text, out, pos, line = res.texts[doc], [], 0, [0]
     by_key = {e.key: e for e in res.entities}
+    flags = {f.key: f for f in res.flags}
     leaks = ([lk["text"] for lk in consistency_check(res)["leak_items"] if lk["doc"] == doc]
              if version == "anonymized" else [])
     rx_plain = _search_rx(query)
     for g in res.segments[doc]:
         out.append(_plain(text[pos:g.start], line, leaks, rx_plain))
         hitcls = " hit-chip" if rx_plain is not None and rx_plain.search(html.escape(" ".join(g.original.split()))) else ""
-        if g.kind == "tidy":  # wording tidy-ups ("On" → "In", a repeated label dropped): no chip
+        orig = " ".join(g.original.split())
+        if g.kind == "tidy":  # wording tidy-ups ("On" → "In", a repeated label dropped): no highlight
             out.append(_plain(g.original, line) if version == "original"
                        else html.escape(g.replacement) + _anchors(g.original, line))
             pos = g.end
             continue
         long_cls = " chip-long" if len(g.replacement) > 40 else ""
         if g.kind == "flag":
+            f = flags.get(g.ref)
             changed = g.status in ("accepted", "edited")
-            if version == "original":
-                tip = f"Becomes: {g.replacement}" if changed else "Flagged — needs a look"
-                out.append(f'<span class="flag" title="{html.escape(tip)}">{_plain(g.original, line)}</span>')
-            elif changed:
-                out.append(f'<span class="chip t-FLAG{long_cls}" title="Original: {html.escape(g.original)}" '
-                           f'data-orig="{html.escape(" ".join(g.original.split()), quote=True)}">'
+            ftitle = next((r.title for r in st.session_state.session.policy.flags if f and r.id == f.rule and r.title),
+                          "Flagged phrase")
+            tip = _tip("F|" + g.ref, ftitle,
+                       (f"was “{orig[:80]}”" if version == "anonymized" else f"becomes “{g.replacement[:80]}”")
+                       if changed else "left as written for now", "click to change")
+            if version == "anonymized" and changed:
+                out.append(f'<span class="chip t-FLAG{long_cls}" {tip} data-orig="{html.escape(orig, quote=True)}">'
                            f'{html.escape(g.replacement)}</span>{_anchors(g.original, line)}')
             else:
-                out.append(f'<span class="flag" title="Flagged — needs a look">{_plain(g.original, line)}</span>')
-            if edit and version == "anonymized":
-                out.append(_pencil("F|" + g.ref))
+                out.append(f'<span class="flag" {tip}>{_plain(g.original, line)}</span>')
         else:
             e = by_key[g.ref]
             cls = "kept" if not e.is_redacted else ("pending" if e.status == "pending" else "")
+            status = STATUS_WORDS.get(e.status, e.status)
+            kind = type_name(e.type)
             if version == "original":
-                tip = (f"Becomes “{g.replacement}” · {STATUS_WORDS.get(e.status, e.status)}" if e.is_redacted
-                       else STATUS_WORDS.get(e.status, "Kept as written").capitalize())
-                out.append(f'<span class="orig t-{color_type(g.type)} {cls}{hitcls}" title="{html.escape(tip)}">{_plain(g.original, line)}</span>')
+                tip = _tip("E|" + g.ref, orig, f"→ {g.replacement}" if e.is_redacted else "kept as written",
+                           f"{kind} · {status} · click to change")
+                out.append(f'<span class="orig t-{color_type(g.type)} {cls}{hitcls}" {tip}>{_plain(g.original, line)}</span>')
             elif e.is_redacted:
-                tip = f"Original: {' '.join(g.original.split())} · {STATUS_WORDS.get(e.status, e.status)}"
-                out.append(f'<span class="chip t-{color_type(g.type)} {cls}{hitcls}{long_cls}" title="{html.escape(tip)}" '
-                           f'data-orig="{html.escape(" ".join(g.original.split()), quote=True)}">'
+                tip = _tip("E|" + g.ref, f"{e.label} · {kind}", f"was “{orig[:80]}”", f"{status} · click to change")
+                out.append(f'<span class="chip t-{color_type(g.type)} {cls}{hitcls}{long_cls}" {tip} '
+                           f'data-orig="{html.escape(orig, quote=True)}">'
                            f'{html.escape(g.replacement)}</span>{_anchors(g.original, line)}')
             else:
-                out.append(f'<span class="chip kept" title="{html.escape(STATUS_WORDS.get(e.status, "kept as written").capitalize())}">'
-                           f'{_plain(g.original, line)}</span>')
-            if edit and version == "anonymized":
-                out.append(_pencil("E|" + g.ref))
+                tip = _tip("E|" + g.ref, orig, f"{kind} · {status}", "click to change")
+                out.append(f'<span class="chip kept" {tip}>{_plain(g.original, line)}</span>')
         pos = g.end
     out.append(_plain(text[pos:], line, leaks, rx_plain))
     return "".join(out)
@@ -1061,8 +1122,29 @@ export default function (component) {
   const send = (o) => setTriggerValue('action', JSON.stringify(Object.assign({ t: Date.now() }, o)));
 
   root.querySelectorAll('[data-act="toggle-edit"]').forEach((b) => { b.onclick = () => send({ kind: 'toggle_edit' }); });
-  root.querySelectorAll('.chip-edit').forEach((b) => {
-    b.onclick = (ev) => { ev.stopPropagation(); send({ kind: 'edit', ref: b.dataset.ref }); };
+
+  // Hover card on every highlight: what it is, what it was / becomes. Click (without selecting) → Change label.
+  const tip = document.createElement('div');
+  tip.className = 'tipcard'; tip.style.display = 'none';
+  root.appendChild(tip);
+  const esc = (t) => (t || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  root.querySelectorAll('[data-ref]').forEach((el) => {
+    el.addEventListener('mouseenter', () => {
+      tip.innerHTML = '<b>' + esc(el.dataset.tipTitle) + '</b>' + (el.dataset.tipL2 ? '<br>' + esc(el.dataset.tipL2) : '')
+        + (el.dataset.tipL3 ? '<br><span>' + esc(el.dataset.tipL3) + '</span>' : '');
+      tip.style.display = 'block';
+      const r = el.getBoundingClientRect();
+      const top = r.top > 90 ? r.top - tip.offsetHeight - 8 : r.bottom + 8;
+      tip.style.left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 8)) + 'px';
+      tip.style.top = top + 'px';
+    });
+    el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+    el.addEventListener('click', (ev) => {
+      const sel = window.getSelection();
+      if (sel && sel.toString().trim().length > 1) return;  // selecting text, not clicking
+      ev.stopPropagation(); tip.style.display = 'none';
+      send({ kind: 'edit', ref: el.dataset.ref });
+    });
   });
 
   // Select text -> floating "Redact" button (edit mode only).
@@ -1077,12 +1159,11 @@ export default function (component) {
     let text = '';
     if (sel && sel.rangeCount) {
       const frag = sel.getRangeAt(0).cloneContents();
-      frag.querySelectorAll('.chip-edit').forEach((n) => n.remove());
       frag.querySelectorAll('[data-orig]').forEach((n) => n.replaceWith(document.createTextNode(n.dataset.orig)));
       let anc = sel.getRangeAt(0).commonAncestorContainer;
       anc = anc.nodeType === 1 ? anc : anc.parentElement;
       const inside = anc && anc.closest ? anc.closest('[data-orig]') : null;
-      text = (inside ? inside.dataset.orig : frag.textContent).replace(/✎/g, '').replace(/\\s+/g, ' ').trim();
+      text = (inside ? inside.dataset.orig : frag.textContent).replace(/\\s+/g, ' ').trim();
     }
     const node = sel && sel.anchorNode ? (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement) : null;
     const pane = node ? node.closest('.pane') : null;
@@ -1100,7 +1181,8 @@ export default function (component) {
   panes.forEach((p) => {
     const k = 'dpScroll:' + p.dataset.doc + ':' + p.dataset.version;
     p.scrollTop = window[k] || 0;
-    p.addEventListener('scroll', () => { window[k] = p.scrollTop; fab.style.display = 'none'; }, { passive: true });
+    p.addEventListener('scroll', () => { window[k] = p.scrollTop; fab.style.display = 'none'; tip.style.display = 'none'; },
+                       { passive: true });
   });
   // "Show" from the release check: scroll the anonymized pane to the leaked text.
   if (data.leak) {
@@ -1153,6 +1235,59 @@ export default function (component) {
 }
 """
 doc_panes = st.components.v2.component("doc_panes", js=DOC_JS, isolate_styles=False)
+
+# "My rules": saved rule sets live in this browser's localStorage (never on the server). The component applies
+# a save/delete command once (by nonce) and reports the whole library back to Python as state.
+LIB_JS = """
+export default function (component) {
+  const { data, setStateValue } = component;
+  const KEY = 'longitude.rules.v1';
+  let lib = {};
+  try { lib = JSON.parse(window.localStorage.getItem(KEY) || '{}') || {}; } catch (e) { lib = {}; }
+  const cmd = data && data.cmd;
+  if (cmd && cmd.nonce && window.__llRulesNonce !== cmd.nonce) {
+    window.__llRulesNonce = cmd.nonce;
+    if (cmd.op === 'save') lib[cmd.name] = { yaml: cmd.yaml, at: cmd.at };
+    if (cmd.op === 'delete') delete lib[cmd.name];
+    try { window.localStorage.setItem(KEY, JSON.stringify(lib)); } catch (e) {}
+  }
+  setStateValue('library', JSON.stringify(lib));
+}
+"""
+rules_library = st.components.v2.component("rules_library", js=LIB_JS, isolate_styles=False)
+
+
+def my_rules() -> dict:
+    """{name: {"yaml", "at"}} from this browser (empty until the component has reported, or if storage is off)."""
+    with st.container(key="rules_lib_host"):
+        res_c = rules_library(data={"cmd": st.session_state.pop("lib_cmd", None)}, key="rules_lib",
+                              on_library_change=lambda: None)
+    try:
+        return json.loads(getattr(res_c, "library", None) or "{}")
+    except (TypeError, ValueError):
+        return {}
+
+
+def library_command(op: str, name: str, yaml_text: str = "") -> None:
+    import time
+    from datetime import date
+    st.session_state.lib_cmd = {"op": op, "name": name, "yaml": yaml_text, "at": date.today().isoformat(),
+                                "nonce": str(time.time())}
+
+
+def save_rules_panel(sess: Session) -> None:
+    """Save the current rules (settings, rule switches, always-hide names) to My rules, or download them."""
+    default = st.session_state.get("save_rules_name") or f"{sess.policy.name} (my rules)"
+    name = st.text_input("Name", default, key="save_rules_name")
+    c1, c2 = st.columns(2)
+    if c1.button("Save to My rules", type="primary", width="stretch", key="save_rules_btn") and name.strip():
+        library_command("save", name.strip(), sess.export_rules(name.strip()))
+        st.session_state.focus_note = f"Saved “{name.strip()}” to My rules in this browser"
+        st.rerun()
+    c2.download_button("Download (.yaml)", sess.export_rules(name.strip() or sess.policy.name),
+                       f"{(name.strip() or 'rules').replace(' ', '_')}.yaml", "text/yaml", width="stretch")
+    st.caption("Saves your settings, which rules are on, and the names to always hide. My rules live in this "
+               "browser only — download the file to share it with your team or use it on another computer.")
 
 
 def show_leak(lk: dict) -> None:
@@ -1417,18 +1552,18 @@ def documents(sess: Session, res) -> None:
     v2.markdown('<div class="legend"><span><span class="chip">Label</span> hidden</span>'
                 '<span><span class="chip pending">Label</span> needs a look</span>'
                 '<span><span class="flag">phrase</span> flagged</span>'
-                '<span>Hover any highlight to see the original</span></div>', unsafe_allow_html=True)
+                '<span>Hover a highlight to see what it is · click to change it</span></div>', unsafe_allow_html=True)
 
     for w in (sess.warnings[doc] if getattr(sess, 'warnings', None) and doc < len(sess.warnings) else []):
         (st.error if w["level"] == "block" else st.caption)(("Blocks release — " if w["level"] == "block" else "Note: ")
                                                             + w["message"])
     if edit:
-        st.markdown('<p class="edit-hint">Editing: select any text to hide it, or click ✎ next to a label to '
-                    'change it.</p>', unsafe_allow_html=True)
+        st.markdown('<p class="edit-hint">Select any text to hide it. (Click any label to change it — that works '
+                    'any time.)</p>', unsafe_allow_html=True)
 
     def head(d, v):
         btn = (f'<button class="pane-edit{" on" if edit else ""}" data-act="toggle-edit">'
-               f'{"✓ Done" if edit else "✎ Edit"}</button>') if v == "anonymized" else ""
+               f'{"✓ Done" if edit else "✎ Select to hide"}</button>') if v == "anonymized" else ""
         tick = '<span class="ok">✓ approved</span>' if is_current(sess, res, d) else ""
         return (f'<div class="pane-head"><div class="pane-top"><span class="pane-tag {v}">{v}</span>{btn}</div>'
                 f'<div class="pane-name">{html.escape(res.names[d])}{tick}</div></div>')
@@ -1569,6 +1704,7 @@ if sess is not None and (type(sess) is not Session or getattr(sess, "VERSION", 0
         sess = st.session_state.session = Session.upgrade(sess)
     st.toast("Updated to the latest rules — your decisions were kept.")
 header()
+st.session_state.my_rules = my_rules()  # mounted every run, so a save/delete from anywhere is applied
 if sess is None:
     home()
 else:
