@@ -5,6 +5,7 @@
 name: _base
 
 settings:
+  placeholder_style: labels      # labels (Person A, Acquirer…) | redacted ("[REDACTED]") | remove (delete the text)
   role_labels: true              # label entities by role from context ("Defendant", "Buyer") instead of "Company B"
   date_mode: month_year          # month_year | shifted | relative | exact   (edge case 2.3)
   public_companies: review       # review | keep | redact                      (edge case 1.1)

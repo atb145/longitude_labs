@@ -69,6 +69,13 @@ entities:
     rule: always_redact.share_prices
     reason: A share price dates and identifies the security.
     auto: true
+  JOB_TITLE:
+    title: Signatory titles
+    action: redact
+    label: "Title {1}"
+    rule: always_redact.signatory_titles
+    reason: A signatory's title points to one person.
+    auto: true
   TICKER:
     title: Tickers
     action: redact
@@ -162,7 +169,7 @@ keep_list:
     - '\bS\.D\.N\.Y\.|\bE\.D\.N\.Y\.|\bD\.D\.C\.'
     # 1.3 Public-record citations: reported cases, statutes, regulations. (The contributor's own matter has no
     #     reporter citation, so it is still redacted.)
-    - '\b[A-Z][\w.&’'' ]{1,60}\s+v\.\s+[A-Z][\w.&’'' ]{1,60},\s+\d{1,4}\s+(?:U\.S\.|S\.\s?Ct\.|L\.\s?Ed\.(?:\s?2d)?|F\.(?:\s?(?:2d|3d|4th))?|F\.\s?Supp\.(?:\s?(?:2d|3d))?|F\.\s?App’x|B\.R\.)\s+\d{1,5}(?:,\s*\d+)?\s*\([^)]{0,40}\d{4}\)'
+    - '(?:\b[A-Z][\w.&’''-]*\s+){0,5}\b[A-Z][\w.&’''-]*\s+v\.\s+(?:[A-Z][\w.&’''-]*,?\s+){0,5}?[A-Z][\w.&’''-]*,\s+\d{1,4}\s+(?:U\.S\.|S\.\s?Ct\.|L\.\s?Ed\.(?:\s?2d)?|F\.(?:\s?(?:2d|3d|4th))?|F\.\s?Supp\.(?:\s?(?:2d|3d))?|F\.\s?App’x|B\.R\.)\s+\d{1,5}(?:,\s*\d+)?\s*\([^)]{0,40}\d{4}\)'
     - '\b\d{1,2}\s+(?:U\.S\.C\.|C\.F\.R\.|CFR)\s+(?:§+\s*)?\d+[\w.()-]*'
     - '§+\s*\d+[\w.()-]*'
     - '\b(?:Rule|Regulation|Form|Section|Item)\s+\d+[\w.()-]*(?:\s+(?:under|of)\s+the\s+(?:Securities|Exchange|Investment)[\w ]+Act(?:\s+of\s+\d{4})?)?'
@@ -230,11 +237,24 @@ recognizers:
       - '(?P<v>\$\s?\d[\d,]*(?:\.\d+)?)(?=\s*(?:per\s+(?:share|unit|ADS)|a\s+share|/share|par\s+value))'
       - '(?i:(?:share|stock|closing|opening|exercise|strike|offer(?:ing)?|purchase|sale|conversion|subscription|IPO|deal|tender|bid)\s+price\s+(?:of\s+|was\s+|at\s+|is\s+)?(?:approximately\s+|about\s+)?)(?P<v>\$?\s?\d[\d,]*(?:\.\d+)?)'
       - '(?i:(?:priced|closed|trading|traded|opened)\s+at\s+)(?P<v>\$\s?\d[\d,]*(?:\.\d+)?)'
+  - entity: JOB_TITLE
+    score: 0.96
+    patterns:
+      # Signature blocks: "Title: Senior Vice President, Corporate Governance and Corporate Secretary" · "Its: CFO"
+      - '(?m)^[ \t]*(?:Title|Its)[ \t]*:[ \t]*(?P<v>[A-Z][^\n]{2,120}?)[ \t]*$'
+      # "/s/ Keith R. Dolliver" · "Keith R. Dolliver" · "Assistant Secretary" (title on the line after the name)
+      - '(?m)/s/[ \t]*(?P<n>[A-Z][^\n]{2,60}?)[ \t]*\n\s*(?P=n)[ \t]*\n\s*(?P<v>[A-Z][A-Za-z ,&''-]{3,90}?)[ \t]*$'
+  - entity: PERSON
+    score: 0.95
+    name: signature_name_line
+    patterns:
+      - '(?m)^[ \t]*Name[ \t]*:[ \t]*(?P<v>[A-Z][a-z]+(?:[ \t]+[A-Z]\.)*(?:[ \t]+[A-Z][A-Za-z’''-]+){1,2})[ \t]*$'
   - entity: TICKER
     score: 0.9
     patterns:
       - '\((?:NASDAQ|Nasdaq|NYSE|NYSE American|OTC|AMEX)\s*:\s*(?P<v>[A-Z]{1,5})\)'
-      - '(?i:ticker(?: symbol)?)\s+"?(?P<v>[A-Z]{1,5})\b'
+      # "under the symbol “ATVI”" · "ticker symbol 'BLCT'" — delisted symbols aren't on the SEC list, context finds them
+      - '(?i:(?:ticker|trading|stock)?\s*symbols?(?:\s+of)?|ticker)\s*[:“"''‘]{0,2}\s*(?P<v>[A-Z]{1,5}(?:\.[A-Z])?)(?=[”"''’]|\b)'
       # SEC cover page: "Trading Symbol(s)" column, value a few lines below the heading
       - '(?s)Trading\s+Symbol\(s\).{0,300}?\n(?P<v>[A-Z]{2,5})\n'
   - entity: CASE_NUMBER
@@ -262,7 +282,7 @@ recognizers:
     score: 0.9
     patterns:
       - '(?P<v>\b(?:One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)\s+(?:[A-Z][A-Za-z0-9.]*\s+){1,4}(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.|Lane|Way|Place|Plaza|Drive|Parkway|Center|Centre),\s+[A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?,\s+(?:[A-Z]{2}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)(?:\s+\d{5}(?:-\d{4})?)?)'
-      - '(?P<v>\b\d{1,6}\s+(?:[A-Z][A-Za-z0-9.]*\s+){1,4}(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.|Lane|Ln\.|Drive|Dr\.|Way|Place|Pl\.|Court|Ct\.|Plaza|Terrace|Parkway)(?:,?\s+(?:Suite|Apt\.?|Unit|Floor|Fl\.)\s+\w+)?,\s+[A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?,\s+(?:[A-Z]{2}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)(?:\s+\d{5}(?:-\d{4})?)?)'
+      - '(?P<v>\b\d{1,6}\s+(?:[A-Z][A-Za-z0-9.]*\s+){1,4}(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Boulevard|Blvd\.|Lane|Ln\.|Drive|Dr\.|Way|Place|Pl\.|Court|Ct\.|Plaza|Terrace|Parkway)(?:,?\s+(?:Suite|Ste\.?|Apt\.?|Unit|Floor|Fl\.|Building|Bldg\.?|Tower|Room|Rm\.?|#)\s*[\w-]+){0,2},\s+[A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)?,\s+(?:[A-Z]{2}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)(?:\s+\d{5}(?:-\d{4})?)?)'
   - entity: DATE
     score: 0.95
     patterns:

@@ -347,3 +347,63 @@ def test_renaming_an_address_overrides_city_state():
     s.rename(addr.key, "Address 1")
     out = s.run().outputs[0]
     assert "Address 1" in out and "Redmond" not in out
+
+
+# ---------------------------------------------------------------- Activision 8-K excerpt
+@pytest.fixture(scope="module")
+def atvi():
+    return run([("atvi.txt", (FIX / "atvi_8k_excerpt.txt").read_text())])
+
+
+def test_full_company_suffix_is_covered(atvi):
+    _, res = atvi
+    out = res.outputs[0]
+    assert "oration" not in out and "Microsoft" not in out
+    assert "INC." not in out and "Activision" not in out.title()
+
+
+def test_address_with_building_is_one_redaction(atvi):
+    _, res = atvi
+    out = res.outputs[0]
+    for part in ("2701", "Olympic", "Building B", "Santa Monica", "90404"):
+        assert part not in out, part
+
+
+def test_delisted_ticker_found_by_context(atvi):
+    _, res = atvi
+    assert "ATVI" not in res.outputs[0]
+
+
+def test_signatory_title_is_redacted(atvi):
+    _, res = atvi
+    out = res.outputs[0]
+    assert "Corporate Governance" not in out and "Corporate Secretary" not in out
+    assert "Ellenberg" not in out
+
+
+@pytest.mark.parametrize("style,marker", [("redacted", "[REDACTED]"), ("remove", None)])
+def test_placeholder_styles(style, marker):
+    s, res = run([("atvi.txt", (FIX / "atvi_8k_excerpt.txt").read_text())], placeholder_style=style)
+    out = res.outputs[0]
+    assert "Microsoft" not in out and "Company A" not in out and "Person A" not in out
+    if marker:
+        assert marker in out
+    else:
+        assert '("")' not in out and "“”" not in out
+    assert "October 2023" in out               # generalized values stay readable
+    assert consistency_check(res)["leak_free"]
+
+
+def test_leaks_are_located_and_fixable():
+    # The defendant's name also sits inside a reported-case citation, which the keep list protects → a leak.
+    txt = ("Jonathan Mercer opened the account. Mercer later cited SEC v. Mercer, 401 F.2d 833 (2d Cir. 1968) "
+           "in his defense.")
+    s, res = run([("d.txt", txt)])
+    cc = consistency_check(res)
+    assert not cc["leak_free"]
+    lk = cc["leak_items"][0]
+    assert lk["text"] == "Mercer" and lk["doc"] == 0 and lk["label"]           # what, where, and what it should be
+    assert any("listed below" in b for b in s.release_blockers(res))
+    s.redact_as(lk["key"], lk["text"])                                          # the "Redact it" button
+    res2 = s.run()
+    assert consistency_check(res2)["leak_free"] and "Mercer" not in res2.outputs[0]

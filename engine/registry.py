@@ -267,6 +267,10 @@ def type_title(etype: str) -> str:
 
 
 # ---------------------------------------------------------------- matching patterns
+# Longest first ("Corporation" before "Corp", so "Microsoft Corporation" isn't cut to "Microsoft Corp" + "oration");
+# common suffixes in any case ("INC.", "Inc."), two-letter ones only as written (", AG" vs ", against").
+ORG_SUFFIX_RX = (r"(?:(?i:Incorporated|Inc\.?|Corporation|Corp\.?|Company|Co\.|Limited|Ltd\.?|L\.L\.C\.|LLC|L\.P\.|LP|"
+                 r"N\.A\.|plc|Holdings)|(?-i:AG|SA|S\.A\.|N\.V\.|GmbH))(?!\w)")
 ALIAS_RX = re.compile(r'\s*\((?:the\s+|collectively,?\s+)?[“"]([^”"\n]{2,60})[”"](?:\s+or\s+(?:the\s+)?[“"]([^”"\n]{2,60})[”"])?')
 LIT = "lit:"  # variant prefix: an exact alias defined in the text, e.g. (“MGM”) or (“J. Reichman”)
 
@@ -290,12 +294,10 @@ def _variant_pattern(etype: str, variant: str) -> tuple[str, int]:
     if etype == "ORGANIZATION":
         toks = variant.split()
         if len(toks) >= 2:
-            # Suffixes are matched case-sensitively even though the name isn't (", AG" vs ", against").
-            suffix = (r"(?-i:(?:,?\s+(?:LLC|L\.L\.C\.|Inc\.?|Incorporated|Corp\.?|Corporation|Company|Co\.|L\.P\.|LP|"
-                      r"Ltd\.?|Limited|N\.A\.|plc|PLC|AG|SA|S\.A\.|N\.V\.|GmbH|Holdings)(?!\w))?)")
+            suffix = r"(?:,?\s+" + ORG_SUFFIX_RX + r")?"
             return r"\b" + r"\s+".join(map(re.escape, toks)) + r"\b" + suffix, re.IGNORECASE
         cap = toks[0].capitalize()
-        suffix = r"(?:,?\s+(?:LLC|Inc\.?|Incorporated|Corp\.?|Corporation|Company|Co\.|Ltd\.?|Limited|plc|PLC|Holdings))?"
+        suffix = r"(?:,?\s+" + ORG_SUFFIX_RX + r")?"
         return r"\b(?:" + re.escape(cap) + "|" + re.escape(cap.upper()) + r")\b" + suffix, 0
     if etype in ("ACCOUNT_NUMBER", "CRD_NUMBER", "PHONE_NUMBER", "US_SSN"):
         return None, 0  # literal variants handled via mention texts
@@ -739,7 +741,13 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         """SEC cover pages label each field in parentheses on the next line: '(Address of Principal Executive
         Offices)', '(Zip Code)'. Returns that caption in sentence case, or ''."""
         for doc, _, me, _ in e.mentions:
-            m = re.match(r"[\s\d,-]{0,24}\(([A-Z][^()\n]{2,60})\)", texts[doc][me:me + 160])
+            window = texts[doc][me:me + 160]
+            if e.type == "POSTAL_CODE":   # "(Address of principal executive offices) (Zip Code)" → the ZIP's caption
+                m = re.search(r"\((Zip(?: Code)?|Postal Code)\)", window[:120], re.IGNORECASE)
+                if m:
+                    return "Zip code"
+                continue
+            m = re.match(r"[\s\d,-]{0,24}\(([A-Z][^()\n]{2,60})\)", window)
             if m:
                 words = " ".join(m.group(1).split())
                 return words[:1].upper() + words[1:].lower()
@@ -1043,9 +1051,20 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
 
     # 7. Render.
     segments: list[list[Segment]] = [[] for _ in texts]
+    # Placeholder style: labels (Person A, Acquirer…) keep the link between mentions; "[REDACTED]" or removing the
+    # text gives nothing back — use it when a label itself could point to the source.
+    style = settings.get("placeholder_style", "labels")
+    rounded = {"DATE", "MONEY", "SHARE_COUNT"}  # generalized values stay readable in every style
+
+    def styled(e: Entity, orig: str) -> str:
+        rep_ = e.replacement_for(orig)
+        if style == "labels" or not e.is_redacted or e.type in rounded:
+            return rep_
+        return "[REDACTED]" if style == "redacted" else ""
+
     for e in entities:
         for doc, s, end, orig in e.mentions:
-            segments[doc].append(Segment(s, end, orig, e.replacement_for(orig), "entity", e.key, e.type, e.status))
+            segments[doc].append(Segment(s, end, orig, styled(e, orig), "entity", e.key, e.type, e.status))
     covering = defaultdict(list)
     for f in flag_list:
         for doc, s, end, orig in f.mentions:
@@ -1066,7 +1085,11 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
             out += [text[pos:g.start], g.replacement]
             pos = g.end
         out.append(text[pos:])
-        outputs.append("".join(out))
+        joined = "".join(out)
+        if style == "remove":  # tidy the gaps left behind
+            joined = re.sub(r"\(\s*[\"“”'‘’]{0,2}\s*\)|[\"“]\s*[\"”]|[‘']\s*[’']", "", joined)  # empty ("") / “”
+            joined = re.sub(r"[ \t]{2,}", " ", re.sub(r"[ \t]+([,.;:)])", r"\1", joined))
+        outputs.append(joined)
 
     # 8. Review queue (stable order: first appearance).
     items = [("E|" + e.key, e.mentions[0][:2]) for e in entities if e.tier == "review" and e.status != "public"]
@@ -1125,7 +1148,8 @@ def release_check(res: Result, warnings: list[list[dict]] | None = None, rights_
     if cc["unreviewed"]:
         out.append(f"Finish review ({len(cc['unreviewed'])} open).")
     if not cc["leak_free"]:
-        out.append("Original text found in the output (see 'leaks').")
+        n = len(cc["leak_items"])
+        out.append(f"Original text still in the output ({n} place{'s' if n != 1 else ''} — listed below).")
     if not cc["all_consistent"]:
         out.append("Some entities have more than one replacement.")
     for name, ws in zip(res.names, warnings or []):
@@ -1137,7 +1161,7 @@ def release_check(res: Result, warnings: list[list[dict]] | None = None, rights_
 
 def consistency_check(res: Result) -> dict:
     """Same replacement for each entity in every document + scan outputs for leaked originals."""
-    rows = []
+    rows, leak_items = [], []
     for e in res.entities:
         per_doc: dict[int, set[str]] = defaultdict(set)
         for doc, _, _, orig in e.mentions:
@@ -1151,8 +1175,11 @@ def consistency_check(res: Result) -> dict:
                 for o in originals:
                     if o.lower() in e.replacement_for(o).lower():
                         continue  # already coarse ("$2B" → "~$2B") — the replacement contains it on purpose
-                    if len(o) >= 3 and re.search(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", out, re.IGNORECASE):
-                        leaks.append(f"{o!r} in {res.names[doc]}")
+                    hit = len(o) >= 3 and re.search(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", out, re.IGNORECASE)
+                    if hit:
+                        leaks.append(f"{hit.group()!r} in {res.names[doc]}")
+                        # the exact wording found, so "Redact it" can target it
+                        leak_items.append({"text": hit.group(), "doc": doc, "key": e.key, "label": e.label})
         rows.append({
             "registry_id": e.label,
             "entity_type": e.type,
@@ -1167,5 +1194,6 @@ def consistency_check(res: Result) -> dict:
         "rows": rows,
         "all_consistent": all(r["consistent"] for r in rows),
         "leak_free": not any(r["leaks"] for r in rows),
+        "leak_items": leak_items,   # [{"text", "doc", "key", "label"}] — where each leak is, for the UI
         "unreviewed": unreviewed,
     }
