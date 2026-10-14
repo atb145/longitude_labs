@@ -61,8 +61,8 @@ def inject_css() -> None:
     .ll-coord { font-size:.8rem; color:var(--dim); padding:.25rem .8rem; border:1px solid var(--rule); border-radius:999px; }
     .wave { display:block; width:100%; height:18px; color:var(--soft); margin:.2rem 0 2rem; }
     .ll-label { font-family:var(--sans); text-transform:uppercase; letter-spacing:.12em; font-size:.72rem;
-                font-weight:600; color:var(--dim); margin:0 0 .5rem 0; }
-    .ll-label b { color:var(--fg); font-weight:600; }
+                font-weight:500; color:var(--dim); margin:0 0 .5rem 0; }
+    .ll-label b { color:var(--fg); font-weight:500; }
     .hero { text-align:center; max-width:760px; margin:2.2rem auto 2.6rem; }
     .hero h1 { font-size:clamp(2.4rem, 5.5vw, 3.6rem) !important; line-height:1.08; margin:0 0 1rem; padding:0; }
     .hero p { font-size:1.15rem; line-height:1.6; color:var(--dim); margin:0 auto; max-width:56ch; }
@@ -71,7 +71,7 @@ def inject_css() -> None:
     .step b { display:block; font-family:var(--serif); font-size:1.15rem; font-weight:500; margin-bottom:.35rem; }
     .step span { color:var(--dim); font-size:.93rem; line-height:1.55; }
     .step i { font-style:normal; display:inline-block; width:1.6rem; height:1.6rem; line-height:1.6rem; text-align:center;
-              border-radius:999px; background:var(--soft); color:#272727; font-size:.8rem; font-weight:600; margin-bottom:.6rem; }
+              border-radius:999px; background:var(--soft); color:#272727; font-size:.8rem; font-weight:500; margin-bottom:.6rem; }
     @media (max-width: 760px) { .steps { grid-template-columns:1fr; } }
     .ll-note { color:var(--dim); font-size:.95rem; line-height:1.65; max-width:62ch; }
     .ll-rule { border-top:1px solid var(--rule); margin:1.8rem 0; }
@@ -87,9 +87,9 @@ def inject_css() -> None:
 
     /* review card */
     .card { border:1px solid var(--rule); border-radius:1.2rem; padding:1.6rem 1.8rem 1.2rem; margin-bottom:1rem; }
-    .card-type { display:inline-block; font-size:.75rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    .card-type { display:inline-block; font-size:.75rem; font-weight:500; letter-spacing:.08em; text-transform:uppercase;
                  padding:.2rem .7rem; border-radius:999px; background:var(--mark); }
-    .card-ctx { font-family:var(--serif); font-size:1.3rem; line-height:1.6; margin:1rem 0 1.3rem; max-width:62ch; }
+    .card-ctx { font-family:var(--sans); font-weight:400; font-size:1rem; line-height:1.6; margin:1rem 0 1.3rem; max-width:62ch; }
     .card-ctx mark { background:var(--soft); color:#272727; padding:.02em .3em; border-radius:.35rem; }
     .card-top { display:flex; justify-content:space-between; align-items:center; gap:1rem; font-size:.85rem; flex-wrap:wrap; }
     .ctx-dim { color:var(--dim); }
@@ -97,11 +97,11 @@ def inject_css() -> None:
     .form-row { padding:.55rem 0; border-bottom:1px solid var(--rule); }
     .form-ctx { font-size:.92rem; line-height:1.6; margin-top:.3rem; }
     .form-ctx mark { background:var(--soft); color:#272727; padding:0 .2em; border-radius:.3rem; }
-    .ll-sub { font-size:.78rem; font-weight:600; color:var(--dim); margin:.8rem 0 .3rem; }
-    .kv { display:grid; grid-template-columns: 9rem 1fr; gap:.55rem 1rem; font-size:1rem; margin:0; }
-    .kv dt { font-size:.72rem; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); padding-top:.25rem; }
+    .ll-sub { font-size:.78rem; font-weight:500; color:var(--dim); margin:.8rem 0 .3rem; }
+    .kv { font-family:var(--sans); display:grid; grid-template-columns: 9rem 1fr; gap:.55rem 1rem; font-size:1rem; margin:0; }
+    .kv dt { font-size:.72rem; font-weight:500; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); padding-top:.25rem; }
     .kv dd { margin:0; line-height:1.55; }
-    .kv dd.big { font-weight:500; font-size:1.05rem; }
+    .kv dd.big { font-weight:400; font-size:1.05rem; }
     .kv .rule-id { color:var(--dim); font-size:.85rem; }
 
     /* documents */
@@ -120,7 +120,7 @@ def inject_css() -> None:
                  border-radius:.3rem; vertical-align:baseline; user-select:none; }
     .chip-edit:hover { background:var(--soft); color:#272727; }
     .dp-root { position:relative; }
-    .redact-fab { position:absolute; z-index:20; font:inherit; font-size:.8rem; font-weight:600; cursor:pointer; border-radius:999px;
+    .redact-fab { position:absolute; z-index:20; font:inherit; font-size:.8rem; font-weight:500; cursor:pointer; border-radius:999px;
                   padding:.3rem .8rem; border:1px solid #272727; background:#272727; color:#F7F3EA; box-shadow:0 2px 8px rgba(0,0,0,.18); }
     .edit-hint { font-size:.85rem; color:var(--dim); margin:-.2rem 0 .6rem; }
     .st-key-prev_doc button, .st-key-next_doc button { padding:.45rem 0 !important; min-width:0; font-size:1rem; }
@@ -128,14 +128,14 @@ def inject_css() -> None:
             margin:.8rem 0; font-size:.9rem; }
     .gate ul { margin:.3rem 0 0 1.1rem; padding:0; } .gate li { margin:.15rem 0; color:var(--dim); }
     .count-top { font-size:.85rem; color:var(--dim); margin:0 0 .15rem; }
-    .count-top b { color:var(--fg); font-weight:600; }
+    .count-top b { color:var(--fg); font-weight:500; }
     .doc-count b { color:var(--fg); }
-    .pane-tag { font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase; padding:.12rem .6rem; border-radius:999px; }
+    .pane-tag { font-size:.7rem; font-weight:500; letter-spacing:.08em; text-transform:uppercase; padding:.12rem .6rem; border-radius:999px; }
     .pane-tag.original { border:1px solid var(--rule); color:var(--dim); }
     .pane-tag.anonymized { background:var(--soft); color:#272727; }
     .pane { height:68vh; overflow-y:auto; padding:1rem 1.2rem; }
     .panes.n1 .pane { height:auto; max-height:none; }
-    .doc { white-space:pre-wrap; font-size:.97rem; line-height:1.8; }
+    .doc { font-family:var(--sans); font-weight:400; white-space:pre-wrap; font-size:.97rem; line-height:1.8; }
     a.ln { display:inline; }
     .chip { font-size:.86em; font-weight:500; padding:.04em .45em; border:1px solid; border-radius:.4rem; cursor:help; white-space:nowrap; }
     .chip.pending { border-style:dashed; }
@@ -562,6 +562,13 @@ def bearing(done: int, total: int) -> None:
 
 
 def review(sess: Session, res) -> None:
+    with st.expander("Quick tips"):
+        st.write("Accept uses the proposed replacement. Keep original leaves the text unchanged. "
+                 "Edit replacement lets you choose your own wording, then Apply to all forms updates the linked occurrences.")
+        st.write("Use See all occurrences to check the surrounding text. If two different people were grouped together, "
+                 "use Split a form off. Back undoes your last review decision.")
+        st.write("In Documents, turn on editing to select a missed phrase or change a placeholder. "
+                 "If you are unsure what a phrase identifies, ask the document owner before approving it.")
     queue = res.queue
     pending = [k for k in queue if res.item(k).status == "pending"]
     bearing(len(queue) - len(pending), len(queue))
