@@ -20,8 +20,8 @@ def open_library(at: AppTest) -> AppTest:
 def test_send_to_library_then_use_again():
     at = open_library(AppTest.from_file(APP, default_timeout=180).run())
     assert not at.exception
-    assert [e["name"] for e in at.session_state.library] == ["Harborview enforcement matter",
-                                                             "Q3 broker-dealer exam — Pinecrest"]
+    assert [e["name"] for e in at.session_state.library] == ["Project Granite — merger 8-Ks",
+                                                             "Item 5.02 officer-change review"]
     at.session_state.page = "Anonymize"
     click(at.run(), "Try with sample case")
     sess = at.session_state.session
@@ -62,12 +62,18 @@ def test_send_to_library_then_use_again():
     assert new.ops["decisions"]["E|ORGANIZATION:whitcombe"]["action"] == "keep"
 
 
-def test_example_entry_without_an_open_set():
+def test_example_entry_on_the_bundled_8ks(monkeypatch):
+    # The examples are keyed to the bundled SEC 8-Ks (the other UI tests use the small fictional case)
+    monkeypatch.setenv("ANONYMIZER_SAMPLES", str(pathlib.Path(APP).parent / "samples"))
     at = open_library(AppTest.from_file(APP, default_timeout=180).run())
-    click(at, "Use again", 0, page="Library")  # Harborview example: no set open, so no question
-    assert at.session_state.page == "Anonymize" and at.session_state.library_use["name"].startswith("Harborview")
+    click(at, "Use again", 0, page="Library")  # Project Granite: no set open, so no question
+    assert at.session_state.page == "Anonymize" and at.session_state.library_use["name"].startswith("Project Granite")
     click(at, "Try with sample case")
     assert not at.exception
-    res = at.session_state.session.run()
-    assert {"MONEY", "SHARE_COUNT"} <= set(at.session_state.session.settings["disabled"])
-    assert sum(res.item(k).status != "pending" for k in res.queue) == 4
+    sess = at.session_state.session
+    res = sess.run()
+    assert {"MONEY", "SHARE_COUNT"} <= set(sess.settings["disabled"])
+    labels = {e.key: e.label for e in res.entities}
+    assert (labels["ORGANIZATION:microsoft"], labels["ORGANIZATION:activision blizzard"]) == ("Acquirer", "Target")
+    out = "\n".join(res.outputs)
+    assert "Santa Monica" not in out and "2701 Olympic" not in out   # the hand redactions came along
