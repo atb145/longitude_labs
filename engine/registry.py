@@ -11,7 +11,10 @@ Ops (user actions) are plain dicts so they can be serialized behind an API later
 """
 from __future__ import annotations
 
+import bisect
+import functools
 import hashlib
+import itertools
 import math
 import re
 from collections import defaultdict
@@ -194,11 +197,25 @@ _ABBR = re.compile(r"\b(?:Mr|Mrs|Ms|Dr|No|Nos|Inc|Co|Corp|Ltd|Jr|Sr|St|v|vs|U\.S
 _CUT = re.compile(r"[.!?][\"”’)]*\s+|:[ \t]*\n|\n\s*\n|\n(?=\s*(?:\d{1,3}\.|[IVX]+\.)\s)")
 
 
-def sentence_spans(text: str) -> list[tuple[int, int]]:
+_LIST_NO = re.compile(r"\s*(?:\d{1,3}|[IVX]+)")
+
+
+def _no_break(text: str, at: int) -> bool:
+    """A period that doesn't end a sentence: after an abbreviation ("Mr.", "Inc.") or a list number ("12.").
+    Looks only at the few characters before it, so long documents stay fast."""
+    if _ABBR.search(text[max(0, at - 16):at]):
+        return True
+    nl = text.rfind("\n", max(0, at - 40), at)
+    if nl == -1 and at > 40:
+        return False
+    return bool(_LIST_NO.fullmatch(text, nl + 1, at))
+
+
+@functools.lru_cache(maxsize=64)
+def sentence_spans(text: str) -> tuple[tuple[int, int], ...]:
     cuts = [0]
     for m in _CUT.finditer(text):
-        if m.group()[0] in ".!?" and (_ABBR.search(text[:m.start()])
-                                       or re.search(r"(?:^|\n)\s*(?:\d{1,3}|[IVX]+)$", text[:m.start()])):
+        if m.group()[0] in ".!?" and _no_break(text, m.start()):
             continue
         cuts.append(m.end())
     cuts = sorted(set(cuts + [len(text)]))
@@ -209,7 +226,7 @@ def sentence_spans(text: str) -> list[tuple[int, int]]:
         trail = len(seg.rstrip())
         if trail > lead:
             out.append((a + lead, a + trail))
-    return out
+    return tuple(out)
 
 
 _UNITS = {"thousand": 1e3, "k": 1e3, "million": 1e6, "m": 1e6, "mm": 1e6, "billion": 1e9, "b": 1e9, "bn": 1e9}
@@ -342,16 +359,38 @@ def _keep_spans(policy: Policy, text: str) -> list[tuple[int, int]]:
     return spans
 
 
+class Spans:
+    """Many (start, end) spans, built once, asked "does this overlap any of you?" many times. Sorted starts plus
+    the running maximum end make each question a binary search, so a 200-page document stays fast."""
+
+    def __init__(self, spans=()):
+        spans = sorted((s, e) for s, e in spans)
+        self.starts = [s for s, _ in spans]
+        self.max_end = list(itertools.accumulate((e for _, e in spans), max))
+
+    def hit(self, a: tuple[int, int]) -> bool:
+        i = bisect.bisect_left(self.starts, a[1])  # spans starting before a ends…
+        return i > 0 and self.max_end[i - 1] > a[0]  # …and one of them ending after a starts
+
+
 def _overlaps(a: tuple[int, int], spans) -> bool:
+    if isinstance(spans, Spans):
+        return spans.hit(a)
     return any(a[0] < e and s < a[1] for s, e in spans)
 
 
 def _greedy(cands: list[tuple]) -> list[tuple]:
     """Pick non-overlapping candidates; input already sorted by priority."""
     chosen: list[tuple] = []
+    starts: list[int] = []
+    ends: list[int] = []  # chosen spans never overlap, so sorted by start they are sorted by end too
     for c in cands:
-        if not _overlaps((c[0], c[1]), [(x[0], x[1]) for x in chosen]):
-            chosen.append(c)
+        i = bisect.bisect_left(starts, c[1])
+        if i and ends[i - 1] > c[0]:
+            continue
+        starts.insert(i, c[0])
+        ends.insert(i, c[1])
+        chosen.append(c)
     return sorted(chosen)
 
 
@@ -400,19 +439,51 @@ def _clean_name(d: Detection, policy: Policy, lower_words: set[str]) -> Detectio
     return Detection(d.doc, start, end, text, d.type, d.score, d.source)
 
 
+@functools.lru_cache(maxsize=50_000)
+def _rx(pat: str, flags: int) -> re.Pattern:
+    return re.compile(pat, flags)  # thousands of variants in a long filing; re's own cache holds 512
+
+
+def _word_index(text: str) -> dict[str, list[int]]:
+    idx = defaultdict(list)
+    for m in re.finditer(r"\w+", text):
+        idx[m.group().lower()].append(m.start())
+    return idx
+
+
+def _find(rx: re.Pattern, v: str, text: str, idx: dict[str, list[int]]):
+    """Every match of a variant's pattern. Each word of a variant is required by its pattern, so only the
+    places where its rarest word occurs are searched, not the whole text once per variant (a 230-page
+    filing has thousands of variants)."""
+    words = [w.lower() for w in re.findall(r"\w+", v[len(LIT):] if v.startswith(LIT) else v)]
+    if not words:
+        yield from rx.finditer(text)
+        return
+    occ = min((idx.get(w, ()) for w in words), key=len)
+    n, pad, seen = len(text), len(v) + 120, set()
+    for p in occ:
+        lo, hi = max(0, p - pad), min(n, p + pad)
+        for m in rx.finditer(text, lo, hi):
+            # the window's end looks like the end of the text to \b, so a match touching it is cut short
+            if m.start() <= p < m.end() and (m.end() < hi or hi == n) and m.span() not in seen:
+                seen.add(m.span())
+                yield m
+
+
 def _propagate(texts, ents, keep, manual=frozenset()):
     for e in ents.values():
         e.mentions = []
         e.form_variant = {}
     for doc, text in enumerate(texts):
         cands = []
+        idx = _word_index(text)
         for e in ents.values():
             for v in e.variants:
                 pat, fl = _variant_pattern(e.type, v)
                 if pat is None:
                     pat = (r"\b" if v[:1].isalnum() else "") + re.escape(v) + (r"\b" if v[-1:].isalnum() else "")
                     fl = re.IGNORECASE
-                for m in re.finditer(pat, text, fl):
+                for m in _find(_rx(pat, fl), v, text, idx):
                     if e.key in manual or not _overlaps(m.span(), keep[doc]):  # a manual redaction beats the keep list
                         cands.append((m.start(), m.end(), e.key, v))
         cands.sort(key=lambda c: (-(c[1] - c[0]), c[2] not in manual, not c[3].startswith(LIT), c[0]))
@@ -426,7 +497,7 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
           settings: dict, ops: dict) -> Result:
     decisions = ops.get("decisions", {})
     disabled = set(settings.get("disabled", []))
-    keep = [[] if "keep_list" in disabled else _keep_spans(policy, t) for t in texts]
+    keep = [Spans() if "keep_list" in disabled else Spans(_keep_spans(policy, t)) for t in texts]
     detections = [d for d in detections if d.source not in disabled]  # edge-case recognizers switched off
 
     # 1. Resolve overlapping detections per document (policy recognizers beat spaCy, longer wins).
@@ -699,6 +770,7 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     for e in entities:
         for doc, s, end, _ in e.mentions:
             taken[doc].append((s, end))
+    taken = defaultdict(Spans, {doc: Spans(v) for doc, v in taken.items()})
     nick_of: dict[str, Entity] = {}
     for e in entities:
         if e.type == "PERSON" and len(e.tokens) >= 2:
@@ -1017,11 +1089,13 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     for e in entities:
         for doc, s_, end, _ in e.mentions:
             mention_spans[doc].append((s_, end))
+    mention_spans = defaultdict(Spans, {doc: Spans(v) for doc, v in mention_spans.items()})
     name_spans = defaultdict(list)
     for e in entities:
         if e.type in ("PERSON", "ORGANIZATION"):
             for md, ms, me, _ in e.mentions:
                 name_spans[md].append((ms, me))
+    name_spans = defaultdict(Spans, {doc: Spans(v) for doc, v in name_spans.items()})
     QUASI_WORDS = {"age": "age", "sex": "gender", "role": "job title", "place": "place", "time": "date",
                    "event": "event", "health": "health detail", "size": "size"}
 
@@ -1038,6 +1112,8 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     for d in detections:
         if d.type in ("LOCATION", "STREET_ADDRESS"):
             locations[d.doc].append((d.start, d.end, d.text))
+    for v in locations.values():
+        v.sort()
 
     def anonymized(doc: int, a: int, b: int) -> str:
         """The sentence as it currently reads in the output (entity replacements applied)."""
@@ -1062,12 +1138,20 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
 
     for doc, text in enumerate(texts):
         spans = sentence_spans(text)
+        sent_starts = [a for a, _ in spans]
+        locs = locations[doc]
+        loc_starts = [ls for ls, _, _ in locs]
+
+        def sentence_of(pos: int, end: int) -> tuple[int, int]:
+            i = bisect.bisect_right(sent_starts, pos) - 1
+            return spans[i] if i >= 0 and pos < spans[i][1] else (pos, end)
+
         cands, sent_hits = [], {}
         for rule in (r for r in policy.flags if r.id not in disabled):
             for m in rule.regex.finditer(text):
                 s_, end = m.span("v") if "v" in rule.regex.groupindex else m.span()
                 if rule.scope == "sentence":
-                    sp = next(((a, b) for a, b in spans if a <= s_ < b), (s_, end))
+                    sp = sentence_of(s_, end)
                     sent_hits.setdefault((rule.id, sp), rule)
                 elif not _overlaps((s_, end), mention_spans[doc]):
                     cands.append((s_, end, rule))
@@ -1090,8 +1174,9 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                             break
                 # Places come from the language model's location tags — but never a tag that is really a
                 # person's or company's name ("Okafor" tagged as a place).
-                loc = next((t for ls, le, t in locations[doc] if a <= ls and le <= b
-                            and not _overlaps((ls, le), name_spans[doc])), None)
+                lo, hi = bisect.bisect_left(loc_starts, a), bisect.bisect_left(loc_starts, b)
+                loc = next((t for ls, le, t in locs[lo:hi] if le <= b and not _overlaps((ls, le), name_spans[doc])),
+                           None)
                 if loc:
                     found["place"] = " ".join(loc.split())
                 if len(found) >= policy.quasi.get("min_categories", 3):
@@ -1305,6 +1390,7 @@ def consistency_check(res: Result) -> dict:
     if cached is not None:
         return cached
     rows, leak_items = [], []
+    indexes = [_word_index(out) for out in res.outputs]
     for e in res.entities:
         per_doc: dict[int, set[str]] = defaultdict(set)
         for doc, _, _, orig in e.mentions:
@@ -1321,10 +1407,11 @@ def consistency_check(res: Result) -> dict:
                     if len(o) < 3:
                         continue
                     if " " in o.strip():
-                        hit = re.search(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", out, re.IGNORECASE)
+                        rx = _rx(r"(?<![\w-])" + re.escape(o) + r"(?![\w-])", re.IGNORECASE)
                     else:  # one word: "Share" the name is not "share" the word
-                        forms = {o, o[:1].upper() + o[1:], o.upper()}
-                        hit = re.search(r"(?<![\w-])(?:" + "|".join(map(re.escape, forms)) + r")(?![\w-])", out)
+                        forms = sorted({o, o[:1].upper() + o[1:], o.upper()})
+                        rx = _rx(r"(?<![\w-])(?:" + "|".join(map(re.escape, forms)) + r")(?![\w-])", 0)
+                    hit = next(_find(rx, o, out, indexes[doc]), None)
                     if hit:
                         leaks.append(f"{hit.group()!r} in {res.names[doc]}")
                         # the exact wording found, so "Redact it" can target it

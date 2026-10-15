@@ -27,7 +27,8 @@ def extract_text(filename: str, data: bytes) -> str:
     return extract_document(filename, data).text
 
 
-def extract_document(filename: str, data: bytes) -> Extracted:
+def extract_document(filename: str, data: bytes, progress=None) -> Extracted:
+    """``progress(done, total)`` is called after each PDF page, for a progress bar."""
     name = filename.lower()
     if name.endswith((".txt", ".md")):
         for enc in ("utf-8", "cp1252", "latin-1"):
@@ -36,7 +37,7 @@ def extract_document(filename: str, data: bytes) -> Extracted:
             except UnicodeDecodeError:
                 continue
     if name.endswith(".pdf"):
-        return _pdf(data)
+        return _pdf(data, progress)
     if name.endswith(".docx"):
         return _docx(data)
     if name.endswith((".htm", ".html")):
@@ -44,19 +45,22 @@ def extract_document(filename: str, data: bytes) -> Extracted:
     raise ValueError(f"Unsupported file type: {filename} (use {', '.join(SUPPORTED)})")
 
 
-def _pdf(data: bytes) -> Extracted:
+def _pdf(data: bytes, progress=None) -> Extracted:
     import pdfplumber
 
     pages, warnings = [], []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         for i, page in enumerate(pdf.pages, 1):
+            if progress:
+                progress(i - 1, len(pdf.pages))
             text = page.extract_text() or ""
             if page.images:
                 text += f"\n[Image removed: page {i}, {len(page.images)} image(s)]"
                 warnings.append({"level": "info", "message": f"Page {i}: {len(page.images)} image(s) removed, not checked."})
-            if not text.strip() or (page.images and len((page.extract_text() or "").strip()) < 20):
+            if not text.strip() or (page.images and len(text.split("\n[Image removed")[0].strip()) < 20):
                 warnings.append({"level": "block", "message": f"Page {i} has no text (scan?). Remove it or use a text PDF."})
             pages.append(text)
+            page.close()  # pdfplumber keeps every page's layout in memory otherwise (1.5 GB for a 230-page filing)
         meta = {k: v for k, v in (pdf.metadata or {}).items() if k in ("Author", "Title", "Subject")  # Creator/Producer name software
                 and isinstance(v, str) and v.strip()}
     text = "\n\n".join(pages)

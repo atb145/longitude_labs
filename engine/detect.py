@@ -78,12 +78,40 @@ def build_analyzer(policy: Policy) -> AnalyzerEngine:
     return analyzer
 
 
-def detect(analyzer: AnalyzerEngine, policy: Policy, docs: list[str]) -> list[Detection]:
+# spaCy needs memory in proportion to the text it is given at once (a 230-page filing in one piece peaks
+# above 3 GB), so long documents are analyzed in pieces of about this many characters.
+CHUNK = 20_000
+
+
+def chunks(text: str, size: int = CHUNK):
+    """(offset, piece) pairs of at most ``size`` characters, cut at a blank line where possible, else at a line
+    break or a space, so a name is never split between two pieces."""
+    i, n = 0, len(text)
+    while i < n:
+        j = min(n, i + size)
+        if j < n:
+            for sep in ("\n\n", "\n", " "):
+                cut = text.rfind(sep, i + size // 2, j)
+                if cut != -1:
+                    j = cut + len(sep)
+                    break
+        yield i, text[i:j]
+        i = j
+
+
+def detect(analyzer: AnalyzerEngine, policy: Policy, docs: list[str], progress=None) -> list[Detection]:
+    """``progress(done, total)`` is called with characters analyzed so far, for a progress bar."""
     out: list[Detection] = []
+    total, done = sum(len(t) for t in docs) or 1, 0
     for i, text in enumerate(docs):
-        results = analyzer.analyze(text=text, language="en", entities=policy.detect_types,
-                                   score_threshold=policy.min_detection)
-        for r in results:
-            source = (r.recognition_metadata or {}).get(RecognizerResult.RECOGNIZER_NAME_KEY, "")
-            out.append(Detection(i, r.start, r.end, text[r.start:r.end], r.entity_type, round(r.score, 2), source))
+        for offset, piece in chunks(text):
+            results = analyzer.analyze(text=piece, language="en", entities=policy.detect_types,
+                                       score_threshold=policy.min_detection)
+            for r in results:
+                source = (r.recognition_metadata or {}).get(RecognizerResult.RECOGNIZER_NAME_KEY, "")
+                start, end = r.start + offset, r.end + offset
+                out.append(Detection(i, start, end, text[start:end], r.entity_type, round(r.score, 2), source))
+            done += len(piece)
+            if progress:
+                progress(done, total)
     return out

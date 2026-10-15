@@ -1,7 +1,9 @@
 """Longitude Anonymizer — Streamlit UI. All logic lives in /engine; this file is presentation only."""
 from __future__ import annotations
 
+import bisect
 import csv
+import functools
 import json
 import html
 import io
@@ -312,10 +314,20 @@ def header() -> None:
 
 
 # --------------------------------------------------------------------------- state helpers
+def progress_bar():
+    """A bar that follows the engine's (message, fraction) progress; long filings take about a minute."""
+    bar = st.progress(0.0, text="Starting…")
+    return bar, lambda message, fraction: bar.progress(min(max(fraction, 0.0), 1.0), text=message)
+
+
 def start_session(files: list[tuple[str, bytes]], policy, rights: bool = False) -> None:
-    with st.spinner("Reading documents and detecting entities…"):
-        st.session_state.session = Session.from_files(files, policy)
-        st.session_state.session.rights_confirmed = rights
+    bar, progress = progress_bar()
+    sess = Session.from_files(files, policy, progress)
+    progress("Matching names across files…", 0.98)
+    sess.run()
+    sess.rights_confirmed = rights
+    st.session_state.session = sess
+    bar.empty()
     st.session_state.view = "Review"
     st.session_state.editing = False
 
@@ -549,17 +561,31 @@ def _flat(text: str, limit: int = 420, keep: str = "end") -> str:
     return "…" + t[-limit:] if keep == "end" else t[:limit] + "…"
 
 
-def sentence_context(text: str, start: int, end: int) -> tuple[str, str, str, str, str]:
-    """(previous sentence, text before span, span, text after span, next sentence)."""
+_LIST_NO = re.compile(r"\s*(?:\d{1,3}|[IVX]+)")
+
+
+@functools.lru_cache(maxsize=16)
+def _sentence_cuts(text: str) -> tuple[int, ...]:
+    """Where sentences start, once per document (a 230-page filing has thousands of review cards)."""
     cuts = [0]
     for m in _CUT.finditer(text):
-        if m.group()[0] in ".!?" and (_ABBR.search(text[:m.start()])
-                                       or re.search(r"(?:^|\n)\s*(?:\d{1,3}|[IVX]+)$", text[:m.start()])):
-            continue  # "Mr." / "No." / initials / paragraph numbers ("1.") are not sentence ends
+        at = m.start()
+        if m.group()[0] in ".!?":
+            # "Mr." / "No." / initials / paragraph numbers ("1.") are not sentence ends; only the few
+            # characters before the full stop matter, so this stays fast on long documents
+            nl = text.rfind("\n", max(0, at - 40), at)
+            if _ABBR.search(text[max(0, at - 16):at]) or (
+                    (nl != -1 or at <= 40) and _LIST_NO.fullmatch(text, nl + 1, at)):
+                continue
         cuts.append(m.end())
-    cuts = sorted(set(cuts + [len(text)]))
-    i = max(k for k in range(len(cuts) - 1) if cuts[k] <= start)
-    j = min(k for k in range(1, len(cuts)) if cuts[k] >= end)
+    return tuple(sorted(set(cuts + [len(text)])))
+
+
+def sentence_context(text: str, start: int, end: int) -> tuple[str, str, str, str, str]:
+    """(previous sentence, text before span, span, text after span, next sentence)."""
+    cuts = _sentence_cuts(text)
+    i = min(bisect.bisect_right(cuts, start) - 1, len(cuts) - 2)
+    j = max(bisect.bisect_left(cuts, end), 1)
     prev = text[cuts[i - 1]:cuts[i]] if i > 0 else ""
     nxt = text[cuts[j]:cuts[j + 1]] if j + 1 < len(cuts) else ""
     return (_flat(prev, 320), _flat(text[cuts[i]:start], 420), _flat(text[start:end]),
@@ -931,12 +957,14 @@ def add_documents_form(sess: Session, key: str) -> None:
                      help="Anonymizing doesn't cure privilege, NDAs or patient confidentiality.")
     if st.button("Add to this set", type="primary", disabled=not (ups and ok), key=f"{key}_go"):
         before = len(sess.run().queue)
-        with st.spinner("Reading and detecting…"):
-            try:
-                added = sess.add_files([(u.name, u.getvalue()) for u in ups])
-            except ValueError as exc:
-                st.error(str(exc))
-                return
+        bar, progress = progress_bar()
+        try:
+            added = sess.add_files([(u.name, u.getvalue()) for u in ups], progress)
+        except ValueError as exc:
+            bar.empty()
+            st.error(str(exc))
+            return
+        progress("Matching names across files…", 0.98)
         new_items = len(sess.run().queue) - before
         st.session_state.focus_note = (f"Added {len(added)} document{'s' if len(added) != 1 else ''}"
                                        + (f" — {new_items} new item{'s' if new_items != 1 else ''} to review"
@@ -1457,12 +1485,30 @@ export default function (component) {
   if (!data.sync || panes.length !== 2) return;
   const sameDoc = panes[0].dataset.doc === panes[1].dataset.doc;
   let lock = null;
+  // Where each line starts in each pane, measured once (a 230-page filing has ~20,000 lines; measuring them on
+  // every scroll event made scrolling lag) and again only when the panes change size.
+  const tops = new Map();
+  const lines = (p) => {
+    if (!tops.has(p)) tops.set(p, Array.from(p.querySelectorAll('a.ln'), (x) => x.offsetTop - p.offsetTop));
+    return tops.get(p);
+  };
+  const ro = new ResizeObserver((entries) => entries.forEach((e) => {  // only a new width rewraps the lines
+    const w = Math.round(e.contentRect.width);
+    if (e.target._w !== undefined && e.target._w !== w) tops.clear();
+    e.target._w = w;
+  }));
+  panes.forEach((p) => ro.observe(p));
+  const later = window.requestIdleCallback || ((f) => setTimeout(f, 300));
+  later(() => panes.forEach(lines));  // measure while idle, not on the first scroll
+  const lineAt = (a, y) => {  // last line starting at or above y
+    let lo = 0, hi = a.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] <= y) lo = m + 1; else hi = m; }
+    return lo - 1;
+  };
   const pos = (p) => {
-    const top = p.scrollTop, a = p.querySelectorAll('a.ln');
-    let i = -1;
-    for (let k = 0; k < a.length; k++) { if (a[k].offsetTop - p.offsetTop <= top) i = k; else break; }
-    const y0 = i < 0 ? 0 : a[i].offsetTop - p.offsetTop;
-    const y1 = i + 1 < a.length ? a[i + 1].offsetTop - p.offsetTop : p.scrollHeight;
+    const top = p.scrollTop, a = lines(p), i = lineAt(a, top);
+    const y0 = i < 0 ? 0 : a[i];
+    const y1 = i + 1 < a.length ? a[i + 1] : p.scrollHeight;
     return [i, y1 > y0 ? (top - y0) / (y1 - y0) : 0];
   };
   const follow = (src, dst) => {
@@ -1470,9 +1516,9 @@ export default function (component) {
       dst.scrollTop = src.scrollTop / Math.max(1, src.scrollHeight - src.clientHeight) * (dst.scrollHeight - dst.clientHeight);
       return;
     }
-    const [i, f] = pos(src), a = dst.querySelectorAll('a.ln');
-    const y0 = i < 0 ? 0 : a[i].offsetTop - dst.offsetTop;
-    const y1 = i + 1 < a.length ? a[i + 1].offsetTop - dst.offsetTop : dst.scrollHeight;
+    const [i, f] = pos(src), a = lines(dst);
+    const y0 = i < 0 ? 0 : a[i];
+    const y1 = i + 1 < a.length ? a[i + 1] : dst.scrollHeight;
     dst.scrollTop = y0 + f * (y1 - y0);
   };
   panes.forEach((p, n) => p.addEventListener('scroll', () => {
