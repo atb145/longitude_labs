@@ -878,7 +878,12 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         roles = {e.key: r for e in entities if e.type in ("PERSON", "ORGANIZATION") and not e.nick_target
                  and e.key not in hand and not kept_by_policy(e) and (r := role_of(e))}
 
-    for e in [x for x in entities if x.key not in hand] + [x for x in entities if x.key in hand]:
+    # Manual redactions are numbered in the order they were made, so a second "Age" becomes Age 2 and the first
+    # keeps Age 1 even when the new one comes earlier in the documents.
+    made = {f"{m.get('type') or 'MANUAL'}:manual:{re.sub(r'\s+', ' ', m['text'].strip()).lower()}": i
+            for i, m in enumerate(ops.get("manual", []))}
+    for e in ([x for x in entities if x.key not in hand]
+              + sorted((x for x in entities if x.key in hand), key=lambda x: made.get(x.key, -1))):
         spec = policy.spec(e.type)
         if e.key in roles:
             continue  # labelled by role below; doesn't use up a letter
@@ -1181,9 +1186,10 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                     covering[doc].append(Segment(s, end, orig, f.replacement_for(orig), "flag", f.key, "FLAG", f.status))
                 continue  # an unchanged sentence flag doesn't alter the text
             segments[doc].append(Segment(s, end, orig, f.replacement_for(orig), "flag", f.key, "FLAG", f.status))
-    # Tidy the anonymized wording (labels style only): "Case No. Case 1" → "Case No. 1", "approximately ~$4
-    # million" → "approximately $4 million", "On March 2022" → "In March 2022", 'Company A ("Company A")' →
-    # "Company A". Only replacement text changes; nothing original is put back.
+    # Tidy the anonymized wording (labels style only): "Case No. Case 1" → "Case No. [Case 1]" (the whole label
+    # stays, bracketed, so it can't be read as case number 1), "approximately ~$4 million" → "approximately $4
+    # million", "On March 2022" → "In March 2022", 'Company A ("Company A")' → "Company A". Only replacement
+    # text changes; nothing original is put back.
     if style == "labels":
         type_words = {"case", "crd", "cusip", "account", "ticker", "phone", "email", "price", "amount", "shares",
                       "link", "zip", "title"}
@@ -1197,7 +1203,7 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 m = re.match(r"^([A-Za-z]+)\s+(\S+)$", g.replacement)
                 if m and m.group(1).lower() in type_words and re.search(
                         r"(?i)\b" + re.escape(m.group(1)) + r"\b\.?\s*(?:No\.?|Number|#)?\s*:?\s*$", prev):
-                    g.replacement = m.group(2)
+                    g.replacement = f"[{g.replacement}]"
                 if g.replacement.startswith("~") and re.search(
                         r"(?i)\b(?:approximately|about|around|roughly|nearly|almost|some)\s*$", prev):
                     g.replacement = g.replacement[1:]
