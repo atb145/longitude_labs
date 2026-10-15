@@ -429,6 +429,11 @@ _THING_ENDINGS = {"time", "date", "period", "act", "acts", "license", "licence",
 _REF_TOKEN = re.compile(r"(?:[A-Z]-)?\d+[A-Z]?(?:[.\-–]\d+[A-Z]?)*(?:\([a-z0-9]+\)?)*")
 _STATE_ZIP = re.compile(r"[a-z]{2},?\s+\d{5}(?:-\d{4})?")  # "PA 19355": an address line, not a name
 _ENDS_IN_SUFFIX = re.compile(r"(?:,?\s+)" + ORG_SUFFIX_RX + r"$")
+# A place the language model found that starts with a house number and has a street word is a street address
+# ("2701 Olympic Boulevard"), wherever it is written.
+_HOUSE_NUMBER_STREET = re.compile(r"\d{1,6}[A-Z]?\s+(?:[A-Z0-9][\w.'-]*\s+){0,4}(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|"
+                                  r"Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Way|Place|Pl\.?|Court|Ct\.?|Plaza|"
+                                  r"Terrace|Parkway|Pkwy\.?|Highway|Hwy\.?|Circle|Square)\b.*", re.S)
 # A contract's own vocabulary: “Governmental Authority” means …, an “ERISA Affiliate”, or a class of things
 # introduced with a lead-in — (such fraction, the “Exchange Ratio”), (collectively, the “Excluded Shares”).
 # A bare (“Microsoft”) or (the “Company”) is how parties, nicknames and codenames are named, so those stay names;
@@ -461,6 +466,8 @@ def _clean_name(d: Detection, policy: Policy, lower_words: set[str], defined: se
     if d.type == "URL":  # a sentence's full stop or comma isn't part of the link
         text = d.text.rstrip(".,;:!?)]”\"'")
         return Detection(d.doc, d.start, d.start + len(text), text, d.type, d.score, d.source) if text else None
+    if d.type == "LOCATION" and _HOUSE_NUMBER_STREET.fullmatch(d.text):
+        return Detection(d.doc, d.start, d.end, d.text, "STREET_ADDRESS", d.score, d.source)
     if d.type not in ("PERSON", "ORGANIZATION"):
         return d
     if re.sub(r"\s+", " ", _strip_possessive(d.text)).strip("“”\"").lower() in policy.not_entities:
@@ -941,9 +948,12 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 if m:
                     return "Zip code"
                 continue
-            m = re.match(r"[\s\d,-]{0,24}\(([A-Z][^()\n]{2,60})\)", window)
+            # Two-column covers interleave captions in the text: "(Address of principal executive (Zip Code)"
+            # then "offices)" on the next line — the caption continues after the other column's.
+            m = re.match(r"[\s\d,-]{0,24}\(([A-Z][^()\n]{2,60})(?:\)|(?:[ \t]*\([^()\n]*\))*[ \t]*\n\s*([^()\n]{1,40})\))",
+                         window)
             if m:
-                words = " ".join(m.group(1).split())
+                words = " ".join(f"{m.group(1)} {m.group(2) or ''}".split())
                 return words[:1].upper() + words[1:].lower()
         return ""
 
