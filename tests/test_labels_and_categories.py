@@ -80,3 +80,56 @@ def test_specific_title_is_still_not_shown_with_context():
     out = s.run().outputs[0]
     assert "Name: Signatory" in out and "Title: Secretary" in out
     assert "Corporate Governance" not in out and "Ellenberg" not in out
+
+
+# ---------------------------------------------------------------- roles from SEC cover pages and defined terms
+PROXY = ("ACME HOLDINGS, INC.\n(Name of Registrant as Specified In Its Charter)\n\n"
+         "Agreement and Plan of Merger by and among Beta Software Corporation, a Washington corporation (“Parent”), "
+         "Gamma Merger Sub Inc., a Delaware corporation and a wholly owned subsidiary of Beta Software Corporation "
+         "(“Merger Sub”), and Acme Holdings, Inc., a Delaware corporation (the “Company”).\n")
+
+
+def test_proxy_cover_names_the_registrant_and_parent_keeps_its_own_term():
+    res = Session.from_texts([("proxy.txt", PROXY)]).run()
+    labels = {e.canonical: e.label for e in res.entities if e.type == "ORGANIZATION"}
+    # the cover page beats the defined term found later ("the Company")
+    assert labels["Acme Holdings, Inc."] == "Registrant"
+    # "…a wholly owned subsidiary of Beta Software Corporation (“Merger Sub”)" names the subsidiary, not Beta
+    assert labels["Beta Software Corporation"] == "Parent"
+    assert "ACME HOLDINGS" not in res.outputs[0] and "REGISTRANT\n(Name of Registrant" in res.outputs[0]
+
+
+# ---------------------------------------------------------------- "Don't hide this" sticks, and is learned
+def _covid_session(policy="Finance"):
+    from engine import Detection
+    txt = "Due to COVID-19, Acme Holdings Inc. met online. Later, COVID-19 rules applied to Acme Holdings Inc."
+    s = Session.from_texts([("memo.txt", txt)], policy)
+    first, second = txt.index("COVID-19"), txt.rindex("COVID-19")
+    # the detector calls the same word a company in one place and a person in another
+    s.detections = s.detections + [Detection(0, first, first + 8, "COVID-19", "ORGANIZATION", 0.9, "test"),
+                                   Detection(0, second, second + 6, "COVID-", "PERSON", 0.9, "test")]
+    return s
+
+
+def test_dont_hide_sticks_when_the_detector_changes_its_mind_about_the_type():
+    s = _covid_session()
+    org = next(e for e in s.run().entities if e.type == "ORGANIZATION" and "covid" in e.key)
+    s.delete(org.key)
+    res = s.run()
+    assert not [e for e in res.entities if "covid" in e.key]           # not back as a person
+    assert res.outputs[0].count("COVID-19") == 2
+    assert any(e.canonical.startswith("Acme") for e in res.entities)   # other names untouched
+
+
+def test_dont_hide_is_remembered_for_the_next_set():
+    from engine import load_policy_text
+    s = _covid_session()
+    s.delete(next(e.key for e in s.run().entities if "covid" in e.key))
+    saved = s.export_rules("My rules")
+    assert "never_hide" in saved and "covid-19" in saved
+    nxt = _covid_session(load_policy_text(saved, "My rules"))         # a new set, using the saved rules
+    res = nxt.run()
+    assert not [e for e in res.entities if "covid" in e.key] and res.outputs[0].count("COVID-19") == 2
+    # a name you listed to always hide still wins over a lesson
+    nxt.add_party("COVID-19", "ORGANIZATION")
+    assert [e for e in nxt.run().entities if "covid" in e.key]

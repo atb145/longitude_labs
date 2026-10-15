@@ -45,6 +45,7 @@ class Policy:
     known_parties: list[dict] = field(default_factory=list)  # saved "always hide" names: {"name", "type"}
     source_raw: dict = field(default_factory=dict)  # the pack's own YAML before _base.yaml is merged in
     ticker_stopwords: set[str] = field(default_factory=set)
+    never_hide: list[str] = field(default_factory=list)  # taught with "Don't hide this": not names, in any set
 
     def spec(self, entity_type: str) -> dict:
         return self.entities.get(entity_type, {"action": "ignore"})
@@ -201,6 +202,7 @@ def parse_policy(raw: dict, fallback_name: str) -> Policy:
                        for p in raw.get("known_parties") or [] if str(p.get("name", "")).strip()],
         source_raw=source_raw,
         ticker_stopwords={t.upper() for t in raw.get("ticker_stopwords") or []},
+        never_hide=[str(t).strip() for t in raw.get("never_hide") or [] if str(t).strip()],
         role_rules=[{"where": r.get("where", "after"), "regex": re.compile(r["pattern"]), "role": r.get("role"),
                      "types": set(r.get("types") or ["PERSON", "ORGANIZATION"])} for r in raw.get("role_labels") or []],
         quasi={"min_categories": int((raw.get("quasi_identifiers") or {}).get("min_categories", 3)),
