@@ -215,3 +215,84 @@ def test_documents_progress_and_no_next_to_approve():
     assert not at.exception
     assert not any(b.label == "Next to approve" for b in at.button)
     assert sum("0 of 3 approved" in m.value for m in at.markdown) == 2   # top and next to the approve button
+
+
+def _sample_app():
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    return at, at.session_state.session
+
+
+def _helpers():
+    """app.py's plain functions (run outside a server, so Streamlit calls are no-ops)."""
+    import logging
+    import runpy
+    logging.disable(logging.WARNING)
+    try:
+        return runpy.run_path(APP, run_name="app_helpers")
+    finally:
+        logging.disable(logging.NOTSET)
+
+
+def test_sidebar_names_open_inline_with_one_question():
+    at, sess = _sample_app()
+    assert not at.exception
+    # names no longer open in floating popovers (only Settings' two short ones remain)
+    assert len(at.sidebar.get("popover")) == 2
+    assert any(e.label == "Settings" for e in at.sidebar.expander)   # no ⚙
+    crd = next(e for e in sess.run().entities if e.type == "CRD_NUMBER")
+    at.sidebar.button(key=f"ent-{crd.key}").click().run()
+    act = at.sidebar.selectbox(key=f"act-{crd.key}")
+    assert act.options == ["Move to another category", "Belongs in another label", "Don't hide it"]
+    act.set_value("move").run()
+    at.sidebar.selectbox(key=f"cat-{crd.key}").set_value("ACCOUNT_NUMBER").run()
+    at.sidebar.button(key=f"catgo-{crd.key}").click().run()
+    assert not at.exception, at.exception
+    assert sess.run().entity(crd.key).type == "ACCOUNT_NUMBER"
+    assert any("now an account number" in t.value for t in at.toast)
+
+
+def test_a_category_you_made_is_offered_in_the_dropdowns():
+    at, sess = _sample_app()
+    sess.redact("47", "OTHER:Age", "", "Age {1}")
+    at.run()
+    assert "Age" in at.sidebar.selectbox(key="sb_parties_kind").options
+    okafor = next(e for e in sess.run().entities if e.canonical == "Daniel K. Okafor")
+    at.sidebar.button(key=f"ent-{okafor.key}").click().run()
+    at.sidebar.selectbox(key=f"act-{okafor.key}").set_value("split").run()
+    dest = at.sidebar.selectbox(key=f"sb-{okafor.key}_dest").options
+    assert "A new person" in dest and "A new age" in dest and "A new CRD number" in dest
+
+
+def test_repeated_category_and_likely_label():
+    h = _helpers()
+    from engine import Session
+    s = Session.from_texts([(p.name, p.read_text()) for p in
+                            sorted((pathlib.Path(APP).parent / "samples").glob("*.txt"))])
+    s.redact("47", "OTHER:Age", "", "Age {1}")
+    res = s.run()
+    assert h["existing_category"](s, res, "age") == "OTHER:Age"          # typed again: it's the same field
+    assert h["existing_category"](s, res, " Ages ") == "OTHER:Age"
+    assert h["existing_category"](s, res, "account number") == "ACCOUNT_NUMBER"
+    assert h["existing_category"](s, res, "Fund name") is None
+    assert h["likely_label"](res, "D. Okafor").canonical == "Daniel K. Okafor"
+    assert h["likely_label"](res, "Capital Partners") is None            # generic words alone don't count
+    assert [h["a_noun"](t) for t in ("ACCOUNT_NUMBER", "US_SSN", "CRD_NUMBER", "PERSON")] == [
+        "an account number", "an SSN", "a CRD number", "a person"]
+
+
+def test_back_and_next_at_the_bottom_of_every_step():
+    at, _ = _sample_app()
+    for view, back, nxt in (("Start", False, True), ("Review", True, True), ("Documents", True, True),
+                            ("Final", True, False)):
+        at.session_state.view = view
+        at.run()
+        labels = [b.label for b in at.button]
+        assert any(l.startswith("← Back") for l in labels) == back, view
+        assert any(l.startswith("Next:") for l in labels) == nxt, view
+    at.session_state.view = "Review"
+    at.run()
+    at.button(key="nav_next").click().run()
+    assert at.session_state.view == "Documents" and not at.exception
+    # the note under the progress bar is part of it (same size and spacing as the row above)
+    assert any('class="fix-note"' in m.value and "still need" in m.value for m in at.markdown)
