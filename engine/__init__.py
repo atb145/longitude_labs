@@ -209,6 +209,12 @@ class Session:
         self.ops["decisions"][item_key] = {"action": action, "value": value}
         self.ops["history"].append(item_key)
 
+    def reopen(self, item_key: str, note: str = "") -> None:
+        """Take back an answer from ② Check: the item is open again. ↶ Undo restores the answer."""
+        if item_key in self.ops["decisions"]:
+            self._checkpoint(note or "Reopen")
+            self.ops["decisions"].pop(item_key)
+
     def decide_many(self, item_keys: list[str], action: str, note: str = "") -> None:
         """One decision for many review items at once; a single ↶ Undo reverses the whole batch."""
         if not item_keys:
