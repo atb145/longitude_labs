@@ -176,8 +176,8 @@ class Session:
         return new
 
     def export_rules(self, name: str, note: str = "") -> str:
-        """The customized rules as a policy file: the pack's own YAML plus your settings, rule switches and
-        "always hide" names. Load it again (library or upload) to reuse it on any document set."""
+        """The customized rules as a policy file: the pack's own YAML plus your settings, rule switches,
+        "always hide" names and the words you said aren't names ("Don't hide this"). Load it again (library or upload) to reuse it on any document set."""
         import yaml
         from datetime import date
         raw = copy.deepcopy(self.policy.source_raw or {})
@@ -187,6 +187,10 @@ class Session:
                 "redact_organizations", "disabled")
         raw["settings"] = {**(raw.get("settings") or {}), **{k: self.settings[k] for k in keep if k in self.settings}}
         raw["known_parties"] = [dict(p) for p in self.ops.get("parties", [])]
+        from .registry import deleted_text
+        taught = list(self.policy.never_hide) + [deleted_text(k) for k in self.ops.get("deleted", [])]
+        if taught:  # "Don't hide this" is remembered: the next set doesn't treat these words as names either
+            raw["never_hide"] = list(dict.fromkeys(taught))
         return yaml.safe_dump(raw, sort_keys=False, allow_unicode=True, width=120)
 
     def run(self) -> Result:

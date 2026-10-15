@@ -76,7 +76,7 @@ keep_list:
 # Context tools: words around a name that make it a party to the engagement (edge case 1.1).
 party_cues:
   after:   # right after the name
-    - '^\s*\(?\s*(?:\n\s*)?\(Exact name of registrant'
+    - '(?i)^\s*\(?\s*(?:\n\s*)?\((?:exact\s+)?name\s+of\s+registrant'
     - '^[^.\n]{0,25}\((?:the\s+|collectively,?\s+)?[“"](?:Company|Buyer|Seller|Purchaser|Target|Parent|Merger Sub|Borrower|Lender|Client|Issuer|Registrant|Acquirer|Guarantor|Employer|Licensee|Licensor|Plaintiff|Defendant|Respondent)[”"]'
   before:  # right before the name
     - '(?i)(?:acquire|acquisition of|merger with|merge with|agreement with|on behalf of|our client,?|advised|represented|engaged by|counsel to|investment in|offer for|bid for|tender offer for|against)\s+(?:the\s+)?$'
@@ -86,17 +86,27 @@ party_cues:
 # two entities with the same role become "Defendant A", "Defendant B". (?P<role>…) is used as the label when
 # a rule has no fixed `role`.
 role_labels:
-  # Defined terms: Name (“Buyer”) · Name (the “Company”) · Name (“Asudani” or “Defendant”)
+  # SEC cover pages: "ACME CORP.\n(Exact name of registrant as specified in its charter)" (8-K, 10-K) or
+  # "(Name of Registrant as Specified In Its Charter)" (proxy, Schedule 14A). First, so it beats a defined term.
   - where: after
-    pattern: '^[^.\n]{0,25}\((?:the\s+|collectively,?\s+)?(?:[“"][^”"\n]{1,40}[”"]\s+or\s+(?:the\s+)?)?[“"](?P<role>Relief Defendant|Defendant|Plaintiff|Respondent|Company|Buyer|Seller|Purchaser|Target|Parent|Merger Sub|Borrower|Lender|Client|Issuer|Registrant|Acquirer|Guarantor|Employer|Employee|Licensee|Licensor|Adviser|Advisor|Trustee|Agent|Investor|Fund)s?[”"]'
+    pattern: '(?i)^\s*\(?\s*(?:\n\s*)?\((?:exact\s+)?name\s+of\s+registrant'
+    role: Registrant
+  # Defined terms: Name (“Buyer”) · Name (the “Company”) · Name (“Asudani” or “Defendant”) ·
+  # Name, a Washington corporation (“Parent”)
+  - where: after
+    pattern: '^(?:[^.\n]{0,25}|,\s+an?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+(?:corporation|company|limited liability company|limited partnership|partnership)\s*)\((?:the\s+|collectively,?\s+)?(?:[“"][^”"\n]{1,40}[”"]\s+or\s+(?:the\s+)?)?[“"](?P<role>Relief Defendant|Defendant|Plaintiff|Respondent|Company|Buyer|Seller|Purchaser|Target|Parent|Merger Sub|Borrower|Lender|Client|Issuer|Registrant|Acquirer|Guarantor|Employer|Employee|Licensee|Licensor|Adviser|Advisor|Trustee|Agent|Investor|Fund)s?[”"]'
   # Case captions: "JONATHAN R. MERCER, Defendant." / "…, Respondent." / "Relief Defendants."
   - where: after
     pattern: '^,?\s*\n?\s*(?P<role>Relief Defendants?|Defendants?|Respondents?|Plaintiffs?)\s*[.,]'
   - where: after   # "MERCER and HARBORVIEW CAPITAL PARTNERS LLC, Defendants." — the first name is one too
     pattern: '^\s+and\s+[^\n]{1,80}?,?\s*\n\s*(?P<role>Relief Defendants|Defendants|Respondents)\s*[.,]'
+  # Proxy style: "Anchorage Merger Sub Inc., which we refer to as “Sub,”" · "…, which we refer to as the “Company”"
   - where: after
-    pattern: '^\s*\(?\s*(?:\n\s*)?\(Exact name of registrant'
-    role: Registrant
+    pattern: '^[^.\n]{0,20}?,?\s+which\s+we\s+refer\s+to\s+as\s+(?:the\s+)?[“"](?P<role>Company|Parent|Merger Sub|Buyer|Seller|Purchaser|Target|Acquirer|Issuer)[,.]?[”"]'
+  - where: after
+    pattern: '^[^.\n]{0,20}?,?\s+which\s+we\s+refer\s+to\s+as\s+(?:the\s+)?[“"]Sub[,.]?[”"]'
+    role: Merger Sub
+    types: [ORGANIZATION]
   - where: before
     pattern: '(?i)(?:will acquire|to acquire|agreed to acquire|acquisition of|tender offer for|bid for|offer for)\s+(?:the\s+)?$'
     role: Target

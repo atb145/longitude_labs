@@ -319,3 +319,16 @@ def test_found_in_filters_the_spellings_by_document():
     assert "×6" in forms()                                   # "Okafor" ×6 across the set
     found.set_value(0).run()                                 # 01_complaint.txt only
     assert "×6" not in forms() and forms().count("×1") == 2
+
+
+def test_select_all_tick_box_replaces_all_and_none():
+    at, sess = _sample_app()
+    assert not any(b.label in ("All", "None") for b in at.button)
+    pending = [k for k in sess.run().queue if sess.run().item(k).status == "pending"]
+    sel = at.checkbox(key="sel_all")
+    assert sel.label == "Select all" and not sel.value          # sentences needing your wording start unticked
+    sel.check().run()
+    assert all(at.session_state[f"pick_{k}"] for k in pending)
+    at.checkbox(key="sel_all").uncheck().run()                   # click again: the box and every row empty
+    assert not any(at.session_state[f"pick_{k}"] for k in pending)
+    assert not at.checkbox(key="sel_all").value

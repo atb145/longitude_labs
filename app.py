@@ -187,6 +187,10 @@ def inject_css() -> None:
     .st-key-entlist .stButton button p { text-align: left; }
     .st-key-entlist [class*="st-key-ented-"] { padding: .7rem .75rem; margin: -.2rem 0 .3rem; border-radius: 1.25rem; }
     .st-key-stepnav { margin-top: .4rem; }
+    .st-key-bulkhint [data-testid="stCaptionContainer"] { max-width: none; }
+    .st-key-selall { align-items: flex-end; margin-bottom: -.6rem; }
+    .st-key-selall [data-testid="stCheckbox"] { width: auto; }
+    .st-key-selall [data-testid="stCheckbox"] label { font-size: .85rem; }
     /* Busy indicator: a "Working…" pill, top right, whenever the app is processing (fades in after .25s) */
     [data-testid="stApp"][data-test-script-state="running"]::after {
         content: "Working…"; position: fixed; top: .75rem; right: 1rem; z-index: 100000; box-sizing: border-box;
@@ -440,7 +444,8 @@ def delete_entity(sess: Session, ent) -> None:
         sess.unredact(ent.key, note=f"Show “{ent.canonical}” again")
     else:
         sess.delete(ent.key, note=f"Show “{ent.canonical}” again")
-    st.session_state.focus_note = f"“{ent.canonical}” will appear as written — ↶ Undo if that was a mistake"
+    later = "" if ent.rule == "manual" else ", here and in your next sets"  # a false detection is remembered
+    st.session_state.focus_note = f"“{ent.canonical}” will appear as written{later} — ↶ Undo if that was a mistake"
     st.session_state.editing = False
 
 
@@ -1099,20 +1104,20 @@ def review_list(sess: Session, res, pending: list[str]) -> None:
 
     def bar(where: str) -> None:
         with st.container(key=f"bulkbar_{where}"):
-            b1, b2, b3, b4 = st.columns([1.7, 1.6, .8, .8], vertical_alignment="center")
+            b1, b2 = st.columns(2, vertical_alignment="center")
             b1.button(f"✓ Approve {len(chosen)} selected", type="primary", disabled=not chosen, width="stretch",
                       key=f"bulk_ok_{where}", on_click=bulk_decide, args=(chosen, "accept"))
             b2.button(f"Keep {len(chosen)} as written", disabled=not chosen, width="stretch",
                       key=f"bulk_keep_{where}", on_click=bulk_decide, args=(chosen, "keep"),
                       help="Not sensitive: leave these as they are in the original")
-            b3.button("All", width="stretch", key=f"bulk_all_{where}", on_click=set_picks, args=(keys, True),
-                      help="Select every item")
-            b4.button("None", width="stretch", key=f"bulk_none_{where}", on_click=set_picks, args=(keys, False),
-                      help="Clear the selection")
 
     bar("top")
-    st.caption("Approve uses the suggestion everywhere it appears. Untick anything you want to change, then "
-               "open it.")
+    with st.container(key="bulkhint"):  # full width, like the boxes around it
+        st.caption("Approve uses the suggestion everywhere it appears. Untick anything you want to change, then "
+                   "open it.")
+    with st.container(key="selall"):  # one tick box above the list, top right: ticked = every item selected
+        st.session_state.sel_all = bool(keys) and len(chosen) == len(keys)
+        st.checkbox("Select all", key="sel_all", on_change=lambda: set_picks(keys, st.session_state.sel_all))
     with st.container(key="qlist"):
         queue_rows(sess, res, items)
     if len(items) > 4:  # the same actions at the bottom, so a long list doesn't send you back up

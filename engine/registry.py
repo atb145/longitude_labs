@@ -305,6 +305,16 @@ def general_role(title: str) -> str:
     return next((role for rx, role in _ROLES if re.search(rx, title, re.IGNORECASE)), "Officer")
 
 
+def name_words(text: str) -> frozenset[str]:
+    """The words of a name, ignoring case, punctuation and digits: "COVID-19", "Covid-" and "covid" are one."""
+    return frozenset(re.findall(r"[a-z]+", text.casefold()))
+
+
+def deleted_text(key: str) -> str:
+    """The text of a registry key ("ORGANIZATION:covid-19" → "covid-19")."""
+    return key.removesuffix("#split").split(":", 1)[-1].split("manual:", 1)[-1]
+
+
 def type_title(etype: str) -> str:
     """Display name for a type, including custom ones typed in by a reviewer ("OTHER:Project codename")."""
     return etype.split(":", 1)[1] if etype.startswith("OTHER:") else etype.replace("_", " ").title()
@@ -719,6 +729,18 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         if gone:
             sample = next(iter(sorted(gone.variants)), "").removeprefix(LIT)
             deleted_items.append((key, gone.type, sample))
+    # "Don't hide this" is about the words, not the type the detector guessed: the same text picked up again as
+    # another type (COVID-19 shown as written, then found as a person) stays as written. What a reviewer taught
+    # in earlier sets (the rules' never_hide list) works the same way on every new document.
+    taught = {name_words(deleted_text(k)) for k in ops.get("deleted", [])} | {name_words(t) for t in policy.never_hide}
+    taught.discard(frozenset())
+    for key, e in list(ents.items()) if taught else []:
+        if key in manual or "known_party" in e.sources:
+            continue  # redacted by hand, or a name you listed to always hide: those win
+        forms = {name_words(v.removeprefix(LIT)) for v in e.variants} - {frozenset()}
+        if forms and forms <= taught:
+            del ents[key]
+            deleted_items.append((key, e.type, next(iter(sorted(e.variants)), "").removeprefix(LIT)))
     for key, new_type in (ops.get("retype") or {}).items():   # "this is a person, not a company"
         if key in ents and new_type:
             ents[key].type = new_type
@@ -884,12 +906,18 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         return False
 
     # Context tool — role labels ("Defendant", "Buyer", "Target") instead of "Company B", when switched on.
+    # "a wholly owned subsidiary of Microsoft (“Merger Sub”)": a term right after "subsidiary of X" names the
+    # subsidiary, not X.
+    object_of = re.compile(r"(?i)\b(?:subsidiar(?:y|ies)|affiliates?|division|unit)\s+of\s+(?:the\s+)?$")
+
     def role_of(e: Entity) -> str:
         for rule in policy.role_rules:
             if e.type not in rule["types"]:
                 continue
             for doc, ms, me, _ in e.mentions:
                 window = texts[doc][me:me + 160] if rule["where"] == "after" else texts[doc][max(0, ms - 80):ms]
+                if rule["where"] == "after" and object_of.search(texts[doc][max(0, ms - 40):ms]):
+                    continue
                 m = rule["regex"].search(window)
                 if m:
                     role = rule["role"] or m.groupdict().get("role") or ""
