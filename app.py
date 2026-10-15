@@ -189,9 +189,9 @@ def inject_css() -> None:
     .st-key-stepnav { margin-top: .4rem; }
     /* Streamlit pulls every markdown block up 1rem to cancel a last paragraph's margin. Rows built from our own
        HTML (no paragraph) then sit on the card's border or the button below; give them back that space. */
-    [data-testid="stMarkdownContainer"]:has(> :is(.qrow, .hit-row, .lib-sum, .checked, .lblov):last-child) { margin-bottom: 0; }
-    .checked-row { padding: .55rem 0; border-bottom: 1px solid var(--rule); font-size: .95rem; overflow-wrap: anywhere; }
-    .checked-row:last-child { border-bottom: 0; }
+    [data-testid="stMarkdownContainer"]:has(> :is(.qrow, .hit-row, .lib-sum, .checked-row, .lblov):last-child) { margin-bottom: 0; }
+    .checked-row { font-size: .95rem; overflow-wrap: anywhere; }
+    [class*="st-key-checked_"] { border-bottom: 1px solid var(--rule); padding: .3rem 0; }
     .checked-row .st { font-size: .8rem; color: var(--dim); margin-left: .4rem; }
     .lib-ask { font-family: var(--serif); font-size: 1.25rem; margin: .2rem 0 .1rem; }
     /* Label overview on ① Files: type, label, one example before and after; text wraps, long sets scroll */
@@ -1202,9 +1202,17 @@ REVIEW_MODES = {"list": "All at once", "one": "One at a time"}
 CHECKED_WORDS = {"accepted": "hidden", "edited": "your wording", "kept": "kept as written", "manual": "hidden by you"}
 
 
+def reopen_item(key: str) -> None:
+    """"Change" on a checked item: open it again, as a card, with the same answers as before."""
+    sess = st.session_state.session
+    it = sess.run().item(key)
+    sess.reopen(key, note=f"Reopen “{(it.text if key.startswith('F|') else it.canonical)[:40]}”")
+    st.session_state.update(review_pick=key, review_mode="one", review_return=True, editing=False)
+    st.session_state.focus_note = "Open again — answer it, or ↶ Undo to keep your earlier answer"
+
+
 def checked_list(res, queue: list[str]) -> None:
-    """Every item you answered in ② Check, as it now reads."""
-    rows = []
+    """Every item you answered in ② Check, as it now reads — and "Change" to answer any of them again."""
     for k in queue:
         it = res.item(k)
         doc = it.mentions[0][0]
@@ -1215,9 +1223,12 @@ def checked_list(res, queue: list[str]) -> None:
             found = it.text if k.startswith("F|") else it.canonical
             shown = it.replacement_for(found)
             main = (f'<b>{html.escape(found)}</b>' + (f' → <b>{html.escape(shown)}</b>' if shown != found else ""))
-        rows.append(f'<div class="checked-row">{main}<span class="st">{html.escape(word)} · '
-                    f'{html.escape(short(res.names[doc], 30))}</span></div>')
-    st.markdown(f'<div class="checked">{"".join(rows)}</div>', unsafe_allow_html=True)
+        with st.container(key=f"checked_{queue.index(k)}"):
+            c1, c2 = st.columns([6, 1], vertical_alignment="center")
+            c1.markdown(f'<div class="checked-row">{main}<span class="st">{html.escape(word)} · '
+                        f'{html.escape(short(res.names[doc], 30))}</span></div>', unsafe_allow_html=True)
+            c2.button("Change", key=f"reopen_{k}", width="stretch", on_click=reopen_item, args=(k,),
+                      help="Open it again to answer differently (↶ Undo brings your answer back)")
 
 
 def review(sess: Session, res) -> None:

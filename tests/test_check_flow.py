@@ -26,7 +26,7 @@ def test_next_is_the_only_forward_button_and_turns_blue_when_the_step_is_done():
     labels = [b.label for b in at.button]
     assert "Read & approve →" not in labels and _next(at).proto.type == "primary"
     assert any(m.value.startswith("<h2>Everything is checked") for m in at.markdown)
-    assert any("class=\"checked\"" in m.value for m in at.markdown)  # what you checked, as it now reads
+    assert any('class="checked-row"' in m.value for m in at.markdown)  # what you checked, as it now reads
     at.session_state.view = "Documents"
     at.run()
     assert _next(at).proto.type == "secondary"
@@ -90,3 +90,20 @@ def test_files_step_label_overview_shows_type_label_before_after():
     before, after = re.findall(r"<td>(.*?)</td>", row)
     assert '<td class="t">Person</td>' in row and "<mark>" in before and "Okafor" in before
     assert "Respondent" in after and "Okafor" not in after
+
+
+def test_change_reopens_a_checked_item_and_undo_restores_the_answer():
+    at, sess = _sample()
+    queue = sess.run().queue
+    for k in queue:
+        sess.decide(k, "accept")
+    at.run()
+    k = queue[0]
+    assert len([b for b in at.button if b.label == "Change"]) == len(queue)   # every checked item can be changed
+    at.button(key=f"reopen_{k}").click().run()
+    assert not at.exception, at.exception
+    assert sess.run().item(k).status == "pending"
+    assert at.session_state.review_pick == k and at.session_state.review_mode == "one"   # opened as a card
+    assert any(b.label == "← Back to the list" for b in at.button)
+    sess.undo()                                                       # changed your mind: the answer is back
+    assert sess.run().item(k).status == "accepted"
