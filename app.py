@@ -849,15 +849,14 @@ def sidebar(sess: Session, res) -> None:
                     '<p class="sb-warn">Nothing is saved — refreshing or closing this tab clears your work.</p>',
                     unsafe_allow_html=True)
 
-        # ---- Labels: with context (roles) or simple (Person A) — up top, it changes every label
-        label_modes = {"context": "With context", "simple": "Simple"}
-        st.session_state.setdefault("t_labels", "context" if s.get("role_labels", False) else "simple")
-        st.segmented_control("Labels", list(label_modes), key="t_labels", format_func=label_modes.get, width="stretch",
-                             help="With context: roles and kinds of title — Defendant, Signatory, Assistant "
-                                  "secretary. Simple: Person A, Company B, Title 1.")
-
         # ---- Settings
         with st.expander("Settings"):
+            # Labels: with context (roles) or simple (Person A) — first, it changes every label
+            label_modes = {"context": "With context", "simple": "Simple"}
+            st.session_state.setdefault("t_labels", "context" if s.get("role_labels", False) else "simple")
+            st.segmented_control("Labels", list(label_modes), key="t_labels", format_func=label_modes.get,
+                                 width="stretch", help="With context: roles and kinds of title — Defendant, Signatory, "
+                                                       "Assistant secretary. Simple: Person A, Company B, Title 1.")
             date_modes = {"month_year": "Month + year", "shifted": "Shifted (same gaps)",
                           "relative": "Relative (Day 0, Day 6…)", "exact": "Exact"}
             styles = {"labels": "Labels (Person A, Acquirer…)", "redacted": "[REDACTED]", "remove": "Remove the text"}
