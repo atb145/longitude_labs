@@ -2031,19 +2031,17 @@ def audit_trail(sess: Session, res) -> None:
 # A saved setup: the settings and rule switches, plus the labels and corrections made by hand. Entries live in
 # this browser tab's session only (no database); "Use again" applies one to the next set that's started.
 LIBRARY_OPS = ("labels", "decisions", "retype", "manual", "merges", "splits", "deleted", "aliases", "parties")
-LIBRARY_EXAMPLES = [  # invented; keys match the sample case, so "Use again" + "Try with sample case" shows it
-    {"name": "Harborview enforcement matter", "date": "Sep 30, 2026",
+LIBRARY_EXAMPLES = [  # invented names; keys match the bundled 8-Ks, so "Use again" + "Try with sample case" shows it
+    {"name": "Project Granite — merger 8-Ks", "date": "Sep 30, 2026",
      "settings": {"disabled": ["MONEY", "SHARE_COUNT"]},
-     "ops": {"labels": {"ORGANIZATION:bellcrest therapeutics": "Issuer",
-                        "ORGANIZATION:meridian clearing": "Clearing firm",
-                        "ORGANIZATION:jpmorgan chase": "Custodian bank"},
-             "decisions": {k: {"action": "accept", "value": ""} for k in (
-                 "E|ORGANIZATION:bellcrest therapeutics", "E|ORGANIZATION:meridian clearing",
-                 "E|ORGANIZATION:jpmorgan chase", "E|ORGANIZATION:whitcombe")}}},
-    {"name": "Q3 broker-dealer exam — Pinecrest", "date": "Aug 12, 2026",
+     "ops": {"labels": {"ORGANIZATION:microsoft": "Acquirer", "ORGANIZATION:activision blizzard": "Target",
+                        "ORGANIZATION:anchorage merger sub": "Merger Sub"},
+             "decisions": {f"E|ORGANIZATION:{k}": {"action": "keep", "value": ""}  # defined terms, not companies
+                           for k in ("sub", "underwater option", "exchange ratio", "notification")},
+             "deleted": ["PERSON:excluded share"]}},
+    {"name": "Item 5.02 officer-change review", "date": "Aug 12, 2026",
      "settings": {"disabled": ["URL", "flag.group_inference"], "date_mode": "relative"},
-     "ops": {"labels": {"PERSON:daniel okafor": "Former CFO", "PERSON:priya raman": "Compliance officer"},
-             "parties": [{"name": "Pinecrest Securities", "type": "ORGANIZATION"}]}},
+     "ops": {"labels": {"PERSON:robert kotick": "Departing CEO", "PERSON:luci altman": "Company signatory"}}},
 ]
 
 
