@@ -1,7 +1,9 @@
 """Longitude Anonymizer — Streamlit UI. All logic lives in /engine; this file is presentation only."""
 from __future__ import annotations
 
+import bisect
 import csv
+import functools
 import json
 import html
 import io
@@ -472,17 +474,31 @@ def _flat(text: str, limit: int = 420, keep: str = "end") -> str:
     return "…" + t[-limit:] if keep == "end" else t[:limit] + "…"
 
 
-def sentence_context(text: str, start: int, end: int) -> tuple[str, str, str, str, str]:
-    """(previous sentence, text before span, span, text after span, next sentence)."""
+_LIST_NO = re.compile(r"\s*(?:\d{1,3}|[IVX]+)")
+
+
+@functools.lru_cache(maxsize=16)
+def _sentence_cuts(text: str) -> tuple[int, ...]:
+    """Where sentences start, once per document (a 230-page filing has thousands of review cards)."""
     cuts = [0]
     for m in _CUT.finditer(text):
-        if m.group()[0] in ".!?" and (_ABBR.search(text[:m.start()])
-                                       or re.search(r"(?:^|\n)\s*(?:\d{1,3}|[IVX]+)$", text[:m.start()])):
-            continue  # "Mr." / "No." / initials / paragraph numbers ("1.") are not sentence ends
+        at = m.start()
+        if m.group()[0] in ".!?":
+            # "Mr." / "No." / initials / paragraph numbers ("1.") are not sentence ends; only the few
+            # characters before the full stop matter, so this stays fast on long documents
+            nl = text.rfind("\n", max(0, at - 40), at)
+            if _ABBR.search(text[max(0, at - 16):at]) or (
+                    (nl != -1 or at <= 40) and _LIST_NO.fullmatch(text, nl + 1, at)):
+                continue
         cuts.append(m.end())
-    cuts = sorted(set(cuts + [len(text)]))
-    i = max(k for k in range(len(cuts) - 1) if cuts[k] <= start)
-    j = min(k for k in range(1, len(cuts)) if cuts[k] >= end)
+    return tuple(sorted(set(cuts + [len(text)])))
+
+
+def sentence_context(text: str, start: int, end: int) -> tuple[str, str, str, str, str]:
+    """(previous sentence, text before span, span, text after span, next sentence)."""
+    cuts = _sentence_cuts(text)
+    i = min(bisect.bisect_right(cuts, start) - 1, len(cuts) - 2)
+    j = max(bisect.bisect_left(cuts, end), 1)
     prev = text[cuts[i - 1]:cuts[i]] if i > 0 else ""
     nxt = text[cuts[j]:cuts[j + 1]] if j + 1 < len(cuts) else ""
     return (_flat(prev, 320), _flat(text[cuts[i]:start], 420), _flat(text[start:end]),
