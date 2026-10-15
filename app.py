@@ -43,7 +43,8 @@ from engine.export import FORMATS, buyer_zip, internal_log_csv, render_file
 from engine.extract import SUPPORTED
 from engine.registry import GENERIC_ORG_WORDS, deleted_text, norm_form, split_key, type_title
 
-# Bundled demo: two public SEC filings on Microsoft's acquisition of Activision Blizzard. ANONYMIZER_SAMPLES points
+# Bundled demo: three public SEC filings on Microsoft's acquisition of Activision Blizzard (the proxy cut to its first
+# quarter, so the demo starts in seconds). ANONYMIZER_SAMPLES points
 # "Try the sample case" at another folder (the tests use a small fictional case).
 SAMPLES = Path(os.environ.get("ANONYMIZER_SAMPLES") or Path(__file__).parent / "samples")
 TYPE_NAMES = {
@@ -742,8 +743,9 @@ def home() -> None:
                       rights=True)  # public SEC filings
         st.rerun()
     if not (uploads and rights):
-        st.caption("Add files and tick the box to continue — or try the sample: two public SEC filings on Microsoft's "
-                   "acquisition of Activision Blizzard, the 8-K announcing the deal (2022) and the 8-K closing it (2023).")
+        st.caption("Add files and tick the box to continue — or try the sample: three public SEC filings on Microsoft's "
+                   "acquisition of Activision Blizzard — the 8-K announcing the deal, the first 57 pages of the merger "
+                   "proxy, and the 8-K closing it.")
     st.caption("Nothing is saved — refreshing or closing this tab clears your work. Download first.")
 
 
@@ -2151,10 +2153,10 @@ def audit_trail(sess: Session, res) -> None:
 # A saved setup: the settings and rule switches, plus the labels and corrections made by hand. Entries live in
 # this browser tab's session only (no database); "Use again" applies one to the next set that's started.
 LIBRARY_OPS = ("labels", "decisions", "retype", "manual", "merges", "splits", "deleted", "aliases", "parties")
-LIBRARY_EXAMPLES = [  # invented names; keys match the bundled 8-Ks, so "Use again" + "Try the sample case" shows it
+LIBRARY_EXAMPLES = [  # invented names; keys match the bundled filings, so "Use again" + "Try the sample case" shows it
     {"name": "Project Granite — merger 8-Ks", "date": "Sep 30, 2026",
      "settings": {"disabled": ["MONEY", "SHARE_COUNT"]},
-     "ops": {"labels": {"ORGANIZATION:microsoft": "Acquirer", "ORGANIZATION:activision blizzard": "Target",
+     "ops": {"labels": {"ORGANIZATION:microsoft gaming": "Acquirer", "ORGANIZATION:activision blizzard": "Target",
                         "ORGANIZATION:anchorage merger sub": "Merger Sub"}}},
     {"name": "Item 5.02 officer-change review", "date": "Aug 12, 2026",
      "settings": {"disabled": ["URL", "flag.group_inference"], "date_mode": "relative"},

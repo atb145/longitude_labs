@@ -74,4 +74,4 @@ def test_example_entry_on_the_bundled_8ks(monkeypatch):
     res = sess.run()
     assert {"MONEY", "SHARE_COUNT"} <= set(sess.settings["disabled"])
     labels = {e.key: e.label for e in res.entities}
-    assert (labels["ORGANIZATION:microsoft"], labels["ORGANIZATION:activision blizzard"]) == ("Acquirer", "Target")
+    assert (labels["ORGANIZATION:microsoft gaming"], labels["ORGANIZATION:activision blizzard"]) == ("Acquirer", "Target")

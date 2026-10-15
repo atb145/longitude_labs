@@ -334,16 +334,20 @@ def test_select_all_tick_box_replaces_all_and_none():
     assert not at.checkbox(key="sel_all").value
 
 
-def test_bundled_sample_is_the_two_sec_8ks(monkeypatch):
-    """The real "Try the sample case": Microsoft's 8-K announcing the Activision Blizzard deal and Activision
-    Blizzard's 8-K closing it, named the way a deal team files them."""
+def test_bundled_sample_is_three_sec_filings(monkeypatch):
+    """The real "Try the sample case": Microsoft's 8-K announcing the Activision Blizzard deal, the first quarter of
+    the merger proxy, and Activision Blizzard's 8-K closing it — in date order, named the way a deal team files them."""
     monkeypatch.setenv("ANONYMIZER_SAMPLES", str(pathlib.Path(APP).parent / "samples"))
     at = AppTest.from_file(APP, default_timeout=180).run()
     next(b for b in at.button if b.label == "Try the sample case").click().run()
     assert not at.exception, at.exception
     sess = at.session_state.session
     assert sess.names == ["1 MSFT 8-K 2022-01-18 - Activision Blizzard deal announced.pdf",
-                          "2 ATVI 8-K 2023-10-13 - Microsoft merger completed.pdf"]
+                          "2 ATVI PREM14A 2022 - merger proxy statement (pp. 1-57).pdf",
+                          "3 ATVI 8-K 2023-10-13 - Microsoft merger completed.pdf"]
+    assert sum(len(t) for t in sess.texts) < 300_000          # the proxy is cut to a quarter: the demo starts fast
+    res0 = sess.run()
+    assert [k for k in res0.queue if res0.item(k).status == "pending"]   # the proxy gives ② Check real items
     res = sess.run()
     for name in ("Microsoft Corporation", "Activision Blizzard, Inc.", "Keith R. Dolliver", "91-1144442"):
         assert all(name not in out for out in res.outputs), name

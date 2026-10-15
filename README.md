@@ -15,9 +15,10 @@ real person, company or account gets the same pseudonym in every file ("Person A
 "Account 1"). Partners use it to test our anonymization on their own documents before selling us
 expert documents for AI training.
 
-The engine is vertical-agnostic. This demo ships with a **Finance** policy pack and a two-document
+The engine is vertical-agnostic. This demo ships with a **Finance** policy pack and a three-document
 sample case: public SEC filings on Microsoft's acquisition of Activision Blizzard — Microsoft's 8-K announcing
-the deal (2022-01-18) and Activision Blizzard's 8-K reporting it completed (2023-10-13).
+the deal (2022-01-18), the first 57 of 228 pages of Activision Blizzard's preliminary merger proxy (PREM14A, 2022;
+cut so the demo starts in about 12 seconds), and Activision Blizzard's 8-K reporting it completed (2023-10-13).
 
 ## How it works
 
@@ -54,7 +55,7 @@ engine/             Anonymization engine — no Streamlit imports, ready to sit 
   __init__.py       Session facade: from_files() → run() / decide() / undo() / merge() / split()
 policies/
   finance.yaml      keep_list, always_redact, generalize, flag_for_review, edge_cases
-samples/            bundled sample case (the two 8-Ks; ANONYMIZER_SAMPLES points the button elsewhere)
+samples/            bundled sample case (two 8-Ks and a proxy excerpt; ANONYMIZER_SAMPLES points the button elsewhere)
 tests/fixtures/     test documents, incl. sample_case/ — the small fictional matter the UI tests use
 .streamlit/         theme (light + dark)
 ```
