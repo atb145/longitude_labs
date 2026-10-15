@@ -1,7 +1,7 @@
 """Regression tests for the Finance pack + general rules (policies/_base.yaml).
 
 Every edge case in "Anonymization Edge Cases — Longitude Labs" (Oct 14, 2026) has a test, plus real-world
-documents: the bundled sample case and Microsoft's 8-K of 2022-01-18 (Activision Blizzard).
+documents: the fictional sample case (tests/fixtures/sample_case) and Microsoft's 8-K of 2022-01-18 (Activision Blizzard).
 Run:  python -m pytest -q
 """
 import io
@@ -95,7 +95,7 @@ def test_1_3_citations_and_statutes_are_kept(edge):
 
 
 def test_1_own_matter_without_reporter_citation_is_still_redacted():
-    _, res = run([("01_complaint.txt", (ROOT / "samples" / "01_complaint.txt").read_text())])
+    _, res = run([("01_complaint.txt", (ROOT / "tests" / "fixtures" / "sample_case" / "01_complaint.txt").read_text())])
     assert "Mercer" not in res.outputs[0]
 
 
@@ -179,7 +179,7 @@ def test_3_1_textless_pdf_page_blocks_release():
 def test_4_1_log_is_not_in_buyer_download():
     import zipfile
     from engine.export import buyer_zip
-    s, res = run([("01_complaint.txt", (ROOT / "samples" / "01_complaint.txt").read_text())])
+    s, res = run([("01_complaint.txt", (ROOT / "tests" / "fixtures" / "sample_case" / "01_complaint.txt").read_text())])
     z = zipfile.ZipFile(io.BytesIO(buyer_zip(res.names, res.outputs)))
     assert not any("log" in n.lower() for n in z.namelist())
 
@@ -235,7 +235,7 @@ def test_microsoft_press_release_is_caught():
 
 
 def test_sample_case_consistent_and_leak_free():
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     _, res = run(docs)
     cc = consistency_check(res)
     assert cc["all_consistent"] and cc["leak_free"]
@@ -263,7 +263,7 @@ def test_role_labels_from_context():
 
 
 def test_role_labels_caption_two_defendants_and_no_gaps():
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     _, res = run(docs, role_labels=True)
     labels = {e.canonical: e.label for e in res.entities}
     assert labels["Jonathan R. Mercer"] == "Defendant A" and labels["Harborview Capital Partners LLC"] == "Defendant B"
@@ -274,14 +274,14 @@ def test_role_labels_caption_two_defendants_and_no_gaps():
 
 
 def test_role_labels_off_gives_letters():
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     _, res = run(docs, role_labels=False)
     assert all(e.label.split()[0] in ("Person", "Company", "Kept") for e in res.entities
                if e.type in ("PERSON", "ORGANIZATION"))
 
 
 def test_rename_label_everywhere_and_unique():
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     s, res = run(docs, role_labels=False)
     northgate = entity(res, "Northgate")
     s.rename(northgate.key, "Receiving broker")
@@ -412,7 +412,7 @@ def test_leaks_are_located_and_fixable():
 # ---------------------------------------------------------------- search
 def test_search_reports_what_happened_to_each_occurrence():
     from engine import search
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     _, res = run(docs)
     mercer = search(res, "Mercer")
     assert len(mercer) >= 10 and {h["status"] for h in mercer} == {"redacted"}
@@ -425,7 +425,7 @@ def test_search_reports_what_happened_to_each_occurrence():
 
 # ---------------------------------------------------------------- undo, type change, tidy wording
 def test_undo_reverses_every_kind_of_change():
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     s, res = run(docs)
     base = res.outputs[0]
     northgate = entity(res, "Northgate")
@@ -440,7 +440,7 @@ def test_undo_reverses_every_kind_of_change():
 
 
 def test_retype_company_to_person():
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     s, res = run(docs, role_labels=False)
     w = entity(res, "Whitcombe")
     assert w.type == "ORGANIZATION"
@@ -450,7 +450,7 @@ def test_retype_company_to_person():
 
 
 def test_wording_is_tidied():
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     _, res = run(docs)
     out = res.outputs[0]
     assert "Case No. Case" not in out and "CRD No. CRD" not in out and "CUSIP CUSIP" not in out
@@ -459,7 +459,7 @@ def test_wording_is_tidied():
 
 
 def test_review_queue_puts_simple_cards_first():
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     _, res = run(docs)
     kinds = [("E" if k.startswith("E|") else ("S" if res.item(k).scope == "sentence" else "F")) for k in res.queue]
     assert kinds == sorted(kinds, key="EFS".index)
@@ -475,7 +475,7 @@ def test_capitalized_one_word_name_does_not_flag_the_ordinary_word():
 
 def test_rules_can_be_saved_and_reused():
     from engine import load_policy_text
-    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))]
+    docs = [(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))]
     s, _ = run(docs, date_mode="relative", placeholder_style="redacted", disabled=["CUSIP"])
     s.add_party("Project Falcon", "MANUAL")
     text = s.export_rules("Acme — finance")

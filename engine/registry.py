@@ -366,7 +366,17 @@ def _keep_spans(policy: Policy, text: str) -> list[tuple[int, int]]:
         spans += [m.span() for m in re.finditer(r"\b" + body + r"\b", text, flags)]
     for rx in policy.keep_patterns:
         spans += [m.span() for m in rx.finditer(text)]
-    return spans
+    return [s for s in map(lambda s: _whole_words(text, *s), spans) if s[1] > s[0]]
+
+
+def _whole_words(text: str, s: int, e: int) -> tuple[int, int]:
+    """Keep-list text never starts or stops inside a word. A pattern that runs into the next name
+    ("…under the Exchange Act and the Act|ivision") would otherwise protect half of it and leave it showing."""
+    while s < e and s > 0 and text[s - 1].isalnum() and text[s].isalnum():
+        s += 1
+    while e > s and e < len(text) and text[e - 1].isalnum() and text[e].isalnum():
+        e -= 1
+    return s, e
 
 
 class Spans:
@@ -419,10 +429,14 @@ _THING_ENDINGS = {"time", "date", "period", "act", "acts", "license", "licence",
 _REF_TOKEN = re.compile(r"(?:[A-Z]-)?\d+[A-Z]?(?:[.\-–]\d+[A-Z]?)*(?:\([a-z0-9]+\)?)*")
 _STATE_ZIP = re.compile(r"[a-z]{2},?\s+\d{5}(?:-\d{4})?")  # "PA 19355": an address line, not a name
 _ENDS_IN_SUFFIX = re.compile(r"(?:,?\s+)" + ORG_SUFFIX_RX + r"$")
-# A contract's own vocabulary: “Governmental Authority” means …, or an “ERISA Affiliate”. Parties are named
-# differently — Microsoft Corporation (“Microsoft”) or (the “Company”) — so those stay names.
-_DEFINED_TERM = re.compile(r"“([A-Z][^”\n]{1,60})”\s+(?:means|shall mean|has the meaning|shall have the meaning)"
-                           r"|\b(?:a|an|each|any)\s+“([A-Z][^”\n]{1,60})”")
+# A contract's own vocabulary: “Governmental Authority” means …, an “ERISA Affiliate”, or a class of things
+# introduced with a lead-in — (such fraction, the “Exchange Ratio”), (collectively, the “Excluded Shares”).
+# A bare (“Microsoft”) or (the “Company”) is how parties, nicknames and codenames are named, so those stay names;
+# a term marked as a codename never counts. Quotes may wrap across a line (“Underwater\nOption”).
+_DEFINED_TERM = re.compile(r"“([A-Z][^”]{1,60}?)”\s+(?:means|shall mean|has the meaning|shall have the meaning)"
+                           r"|\b(?:a|an|each|any)\s+“([A-Z][^”]{1,60}?)”"
+                           r"|\([^()“”]{2,80},\s*(?:the|a|an)\s+“([A-Z][^”]{1,60}?)”\s*\)")
+_CODENAME = re.compile(r"(?i)(?:project|operation|codename|code name)\b")
 
 
 def _singular(phrase: str) -> str:
@@ -436,7 +450,9 @@ def defined_terms(texts: list[str]) -> set[str]:
     out = set()
     for t in texts:
         for m in _DEFINED_TERM.finditer(t):
-            out.add(_singular(" ".join((m.group(1) or m.group(2)).split()).lower()))
+            term = " ".join((m.group(1) or m.group(2) or m.group(3)).split())
+            if not _CODENAME.match(term):
+                out.add(_singular(term.lower()))
     return out
 
 
@@ -493,7 +509,8 @@ def _clean_name(d: Detection, policy: Policy, lower_words: set[str], defined: se
         return None  # (a "name" with no letters is a page number or a date: "3/228 10/14/26")
     if d.type == "ORGANIZATION" and " " in norm and norm.split()[-1].strip(".,") in _THING_ENDINGS:
         return None
-    if _singular(norm) in defined:
+    raw = re.sub(r"\s+", " ", _strip_possessive(d.text)).strip("“”\"").lower()
+    if _singular(norm) in defined or _singular(raw) in defined:
         return None
     # A single capitalized word that also appears in lowercase elsewhere is a common word, not a name.
     if d.source == "SpacyRecognizer" and " " not in norm and norm in lower_words:
