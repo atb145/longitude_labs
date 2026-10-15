@@ -120,6 +120,12 @@ role_labels:
   - where: after
     pattern: '(?i)^[^.\n]{0,4},?\s+(?:is\s+)?(?:an?|the)\s+(?:registered\s+|private\s+|public(?:ly traded)?\s+)?(?P<role>investment adviser|broker-dealer|hedge fund|private equity fund|asset manager|bank|carrier|pharmaceutical company|law firm|accounting firm|auditor|insurer|exchange|startup|manufacturer|distributor|retailer)\b'
     types: [ORGANIZATION]
+  # Signature blocks: "/s/ Keith R. Dolliver" · "By: Jane Doe" · "Name: Jane Doe" — the person who signed. (Their
+  # title shows as the kind of role: "Assistant secretary".) Last, so a caption role like "Defendant" wins.
+  - where: before
+    pattern: '(?m)(?:/s/|^[ \t]*(?:By|Name)[ \t]*:)[ \t]*(?:/s/[ \t]*)?\s*\Z'
+    role: Signatory
+    types: [PERSON]
 
 # Mail providers and platforms: an address there says nothing about the company (context tool: domain linking).
 generic_domains: [gmail, googlemail, yahoo, outlook, hotmail, live, msn, icloud, me, aol, protonmail, proton, gmx,

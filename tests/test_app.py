@@ -296,3 +296,26 @@ def test_back_and_next_at_the_bottom_of_every_step():
     assert at.session_state.view == "Documents" and not at.exception
     # the note under the progress bar is part of it (same size and spacing as the row above)
     assert any('class="fix-note"' in m.value and "still need" in m.value for m in at.markdown)
+
+
+def test_labels_switch_on_top_changes_every_label():
+    at, sess = _sample_app()
+    assert at.sidebar.button_group[0].value == "context" and sess.settings["role_labels"]
+    names = lambda: " ".join(b.label for b in at.sidebar.button)
+    assert "Respondent" in names()
+    at.sidebar.button_group[0].set_value("simple").run()
+    assert not at.exception and sess.settings["role_labels"] is False
+    assert "Respondent" not in names() and "Person" in names()   # the sidebar list follows the same run
+
+
+def test_found_in_filters_the_spellings_by_document():
+    at, sess = _sample_app()
+    okafor = next(e for e in sess.run().entities if e.canonical == "Daniel K. Okafor")
+    at.sidebar.button(key=f"ent-{okafor.key}").click().run()
+    assert "Hidden automatically" in [c.value for c in at.sidebar.caption]   # no "Person ·" in front
+    found = at.sidebar.selectbox(key=f"in-{okafor.key}")
+    assert found.options[0].startswith("All 3 documents")
+    forms = lambda: next(m.value for m in at.sidebar.markdown if "class='form'" in m.value)
+    assert "×6" in forms()                                   # "Okafor" ×6 across the set
+    found.set_value(0).run()                                 # 01_complaint.txt only
+    assert "×6" not in forms() and forms().count("×1") == 2
