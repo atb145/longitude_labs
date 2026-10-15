@@ -2093,11 +2093,7 @@ LIBRARY_EXAMPLES = [  # invented names; keys match the bundled 8-Ks, so "Use aga
     {"name": "Project Granite — merger 8-Ks", "date": "Sep 30, 2026",
      "settings": {"disabled": ["MONEY", "SHARE_COUNT"]},
      "ops": {"labels": {"ORGANIZATION:microsoft": "Acquirer", "ORGANIZATION:activision blizzard": "Target",
-                        "ORGANIZATION:anchorage merger sub": "Merger Sub"},
-             "manual": [  # the ATVI 8-K's head-office address, which the detectors miss
-                 {"text": "2701 Olympic Boulevard, Building B", "type": "MANUAL",
-                  "replacement": "Target's street address", "label": ""},
-                 {"text": "Santa Monica", "type": "MANUAL", "replacement": "Target's city", "label": ""}]}},
+                        "ORGANIZATION:anchorage merger sub": "Merger Sub"}}},
     {"name": "Item 5.02 officer-change review", "date": "Aug 12, 2026",
      "settings": {"disabled": ["URL", "flag.group_inference"], "date_mode": "relative"},
      "ops": {"labels": {"PERSON:robert kotick": "Departing CEO", "PERSON:luci altman": "Company signatory"}}},
