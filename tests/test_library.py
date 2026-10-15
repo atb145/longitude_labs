@@ -63,7 +63,7 @@ def test_send_to_library_then_use_again():
 
 
 def test_example_entry_on_the_bundled_8ks(monkeypatch):
-    # The examples are keyed to the bundled SEC 8-Ks (the other UI tests use the small fictional case)
+    # The examples name the companies in the bundled SEC filings (the other UI tests use the small fictional case)
     monkeypatch.setenv("ANONYMIZER_SAMPLES", str(pathlib.Path(APP).parent / "samples"))
     at = open_library(AppTest.from_file(APP, default_timeout=180).run())
     click(at, "Use again", 0, page="Library")  # Project Granite: no set open, so no question
@@ -73,5 +73,22 @@ def test_example_entry_on_the_bundled_8ks(monkeypatch):
     sess = at.session_state.session
     res = sess.run()
     assert {"MONEY", "SHARE_COUNT"} <= set(sess.settings["disabled"])
-    labels = {e.key: e.label for e in res.entities}
-    assert (labels["ORGANIZATION:microsoft gaming"], labels["ORGANIZATION:activision blizzard"]) == ("Acquirer", "Target")
+    label_of = lambda name: next(e.label for e in res.entities if e.canonical.startswith(name))
+    assert (label_of("Microsoft"), label_of("Activision Blizzard")) == ("Acquirer", "Target")
+
+
+def test_use_again_finds_names_whose_key_changed():
+    # A saved change points at a name by how it was written, not by its registry key, which can change when a
+    # document adds a longer spelling. Here the saved key no longer exists; the spelling still finds the company.
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    at.session_state.library_use = {
+        "name": "Saved before the key changed", "settings": {}, "toggles_on": 0,
+        "ops": {"labels": {"ORGANIZATION:an old key": "Clearing firm"},
+                "decisions": {"E|ORGANIZATION:an old key": {"action": "accept", "value": ""}}},
+        "names": {"ORGANIZATION:an old key": {"type": "ORGANIZATION", "forms": ["Meridian Clearing LLC"]}}}
+    click(at.run(), "Try the sample case")
+    assert not at.exception
+    sess = at.session_state.session
+    assert sess.ops["labels"] == {"ORGANIZATION:meridian clearing": "Clearing firm"}
+    assert sess.run().item("E|ORGANIZATION:meridian clearing").status != "pending"
+    assert {e.key: e.label for e in sess.run().entities}["ORGANIZATION:meridian clearing"] == "Clearing firm"
