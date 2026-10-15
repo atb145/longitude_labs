@@ -23,7 +23,7 @@ def test_send_to_library_then_use_again():
     assert [e["name"] for e in at.session_state.library] == ["Project Granite — merger 8-Ks",
                                                              "Item 5.02 officer-change review"]
     at.session_state.page = "Anonymize"
-    click(at.run(), "Try with sample case")
+    click(at.run(), "Try the sample case")
     sess = at.session_state.session
     sess.rename("ORGANIZATION:meridian clearing", "Clearing firm")
     sess.decide("E|ORGANIZATION:whitcombe", "keep")
@@ -52,7 +52,7 @@ def test_send_to_library_then_use_again():
     assert at.session_state.page == "Anonymize"
     assert any("Mercer complaint set" in m.value for m in at.info)
 
-    click(at, "Try with sample case")
+    click(at, "Try the sample case")
     assert not at.exception
     new = at.session_state.session
     assert new is not sess and "library_use" not in at.session_state
@@ -68,7 +68,7 @@ def test_example_entry_on_the_bundled_8ks(monkeypatch):
     at = open_library(AppTest.from_file(APP, default_timeout=180).run())
     click(at, "Use again", 0, page="Library")  # Project Granite: no set open, so no question
     assert at.session_state.page == "Anonymize" and at.session_state.library_use["name"].startswith("Project Granite")
-    click(at, "Try with sample case")
+    click(at, "Try the sample case")
     assert not at.exception
     sess = at.session_state.session
     res = sess.run()
