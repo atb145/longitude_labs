@@ -90,10 +90,7 @@ def inject_css() -> None:
     [data-testid="stMainBlockContainer"] { container-type: inline-size; }
     .ll-head { flex-wrap: wrap; row-gap: .35rem; }
     .ll-word, .ll-coord { white-space: nowrap; }
-    /* Prose stays at a readable measure instead of running the full page width */
-    [data-testid="stCaptionContainer"], [data-testid="stAlert"], [data-testid="stAlertContainer"], .stAlert, .ll-note, .gate,
-    [data-testid="stCheckbox"] label, [data-testid="stExpanderDetails"] p, .edit-hint { max-width: 62ch; }
-    .kv dd { max-width: 60ch; }
+    /* Text runs the full width of its column, like the boxes and buttons around it (no narrower "measure") */
     @media (max-width: 640px) { .ll-coord { display:none; } .ll-word { font-size:1.15rem; } }
     .ll-word .dim { color:var(--dim); font-family:var(--sans); font-size:.85rem; font-weight:400; margin-left:.3rem; }
     .ll-coord { font-size:.8rem; color:var(--dim); padding:.25rem .8rem; border:1px solid var(--rule); border-radius:999px; }
@@ -111,7 +108,7 @@ def inject_css() -> None:
     .step i { font-style:normal; display:inline-block; width:1.6rem; height:1.6rem; line-height:1.6rem; text-align:center;
               border-radius:999px; background:var(--soft); color:#272727; font-size:.8rem; font-weight:500; margin-bottom:.6rem; }
     @media (max-width: 760px) { .steps { grid-template-columns:1fr; } }
-    .ll-note { color:var(--dim); font-size:.95rem; line-height:1.65; max-width:62ch; }
+    .ll-note { color:var(--dim); font-size:.95rem; line-height:1.65; }
     .ll-rule { border-top:1px solid var(--rule); margin:1.8rem 0; }
     .dim { color:var(--dim); }
 
@@ -128,7 +125,7 @@ def inject_css() -> None:
     .card { border:1px solid var(--rule); border-radius:1.2rem; padding:1.6rem 1.8rem 1.2rem; margin-bottom:1rem; }
     .card-type { display:inline-block; font-size:.75rem; font-weight:500; letter-spacing:.08em; text-transform:uppercase;
                  padding:.2rem .7rem; border-radius:999px; background:var(--mark); }
-    .card-ctx { font-family:var(--sans); font-weight:400; font-size:1rem; line-height:1.6; margin:1rem 0 1.3rem; max-width:62ch; }
+    .card-ctx { font-family:var(--sans); font-weight:400; font-size:1rem; line-height:1.6; margin:1rem 0 1.3rem; }
     .card-ctx mark { background:var(--soft); color:#272727; padding:.02em .3em; border-radius:.35rem; }
     .card-top { display:flex; justify-content:space-between; align-items:center; gap:1rem; font-size:.85rem; flex-wrap:wrap; }
     .ctx-dim { color:var(--dim); }
@@ -172,10 +169,10 @@ def inject_css() -> None:
             margin:.8rem 0; font-size:.9rem; }
     .gate ul { margin:.3rem 0 0 1.1rem; padding:0; } .gate li { margin:.15rem 0; color:var(--dim); }
     .chip-long { white-space: normal; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-    .why { font-size: .92rem; line-height: 1.6; margin: .9rem 0 .4rem; max-width: 62ch; }
+    .why { font-size: .92rem; line-height: 1.6; margin: .9rem 0 .4rem; }
     .why b { font-weight: 600; margin-right: .35rem; }
     .keybox { border: 1px solid #c27a1a; background: color-mix(in srgb, #e0a050 14%, transparent);
-              border-radius: .8rem; padding: .7rem 1rem; margin: .8rem 0 .6rem; font-size: .92rem; max-width: 62ch; }
+              border-radius: .8rem; padding: .7rem 1rem; margin: .8rem 0 .6rem; font-size: .92rem; }
     .sb-warn { font-size: .76rem; color: #c27a1a; margin: -.5rem 0 .8rem; line-height: 1.4; }
     [data-testid="stSidebar"] [data-testid="stPopover"] button { justify-content: flex-start; text-align: left; }
     [data-testid="stButtonGroup"] div:has(> button) { flex-wrap: wrap; row-gap: .3rem; }
@@ -187,7 +184,9 @@ def inject_css() -> None:
     .st-key-entlist .stButton button p { text-align: left; }
     .st-key-entlist [class*="st-key-ented-"] { padding: .7rem .75rem; margin: -.2rem 0 .3rem; border-radius: 1.25rem; }
     .st-key-stepnav { margin-top: .4rem; }
-    .st-key-bulkhint [data-testid="stCaptionContainer"] { max-width: none; }
+    /* Streamlit pulls every markdown block up 1rem to cancel a last paragraph's margin. Rows built from our own
+       HTML (no paragraph) then sit on the card's border or the button below; give them back that space. */
+    [data-testid="stMarkdownContainer"]:has(> :is(.qrow, .hit-row, .lib-sum):last-child) { margin-bottom: 0; }
     .st-key-selall { align-items: flex-end; margin-bottom: -.6rem; }
     .st-key-selall [data-testid="stCheckbox"] { width: auto; }
     .st-key-selall [data-testid="stCheckbox"] label { font-size: .85rem; }
@@ -1112,9 +1111,7 @@ def review_list(sess: Session, res, pending: list[str]) -> None:
                       help="Not sensitive: leave these as they are in the original")
 
     bar("top")
-    with st.container(key="bulkhint"):  # full width, like the boxes around it
-        st.caption("Approve uses the suggestion everywhere it appears. Untick anything you want to change, then "
-                   "open it.")
+    st.caption("Approve uses the suggestion everywhere it appears. Untick anything you want to change, then open it.")
     with st.container(key="selall"):  # one tick box above the list, top right: ticked = every item selected
         st.session_state.sel_all = bool(keys) and len(chosen) == len(keys)
         st.checkbox("Select all", key="sel_all", on_change=lambda: set_picks(keys, st.session_state.sel_all))
@@ -2083,7 +2080,7 @@ def send_to_library_box(sess: Session) -> None:
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     label("Library")
     st.caption("Save this setup — which rules are on, plus your labels and corrections — to reuse on the next set.")
-    c1, c2, _ = st.columns([2, 1.3, .7], vertical_alignment="bottom")
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")  # the row spans the width, like the text above
     d = date.today()
     c1.text_input("Name", f"{sess.policy.name} set · {d:%b} {d.day}", key="lib_name",
                   label_visibility="collapsed")
