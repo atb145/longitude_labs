@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass, field, replace
 
 from .detect import Detection, build_analyzer, detect
-from .extract import extract_document, extract_text
+from .extract import Extracted, extract_document, extract_text
 from .policy import Policy, available_policies, load_policy, load_policy_text
 from .registry import Result, build, consistency_check, redaction_log, release_check, search
 
@@ -42,6 +42,36 @@ def analyzer_for(policy: Policy):
     if key not in _ANALYZERS:
         _ANALYZERS[key] = build_analyzer(policy)
     return _ANALYZERS[key]
+
+
+# Progress for a progress bar, as (message, fraction 0–1). Reading PDFs takes about a third of the time,
+# finding names the rest; the last few percent are left for matching names across files (Session.run).
+READ_SHARE, DETECT_END = 0.35, 0.95
+
+
+def _read_all(files: list[tuple[str, bytes]], progress=None) -> list[tuple[str, Extracted]]:
+    out = []
+    for k, (name, data) in enumerate(files):
+        def page(i: int, n: int, k: int = k, name: str = name) -> None:
+            progress(f"Reading {name} · page {i + 1} of {n}", READ_SHARE * (k + i / max(n, 1)) / len(files))
+        if progress:
+            progress(f"Reading {name}", READ_SHARE * k / len(files))
+        out.append((name, extract_document(name, data, page if progress else None)))
+    return out
+
+
+def _detect_progress(progress, start: float = READ_SHARE):
+    if not progress:
+        return None
+    return lambda done, total: progress("Finding names, companies and numbers",
+                                        start + (DETECT_END - start) * done / max(total, 1))
+
+
+def _shifted(progress, start: float):
+    """from_files hands from_texts a progress that begins where reading ended."""
+    if not progress:
+        return None
+    return lambda message, fraction: progress(message, start + (1 - start) * fraction)
 
 
 @dataclass
@@ -90,22 +120,27 @@ class Session:
         self.ops.get("labels", {}).pop(entity_key, None)
 
     @classmethod
-    def from_texts(cls, docs: list[tuple[str, str]], policy: str | Policy = "Finance") -> "Session":
+    def from_texts(cls, docs: list[tuple[str, str]], policy: str | Policy = "Finance",
+                   progress=None) -> "Session":
+        """``progress(message, fraction)`` follows detection, the slow part (about a minute for a 230-page filing)."""
         if isinstance(policy, str):
             policy = load_policy(available_policies()[policy])
         names, texts = [n for n, _ in docs], [t for _, t in docs]
-        sess = cls(names, texts, policy, detect(analyzer_for(policy), policy, texts), dict(policy.settings))
+        dets = detect(analyzer_for(policy), policy, texts, _detect_progress(progress, 0.0))
+        sess = cls(names, texts, policy, dets, dict(policy.settings))
         sess.ops["parties"] = [dict(p) for p in policy.known_parties]  # saved "always hide" names come along
         return sess
 
     @classmethod
-    def from_files(cls, files: list[tuple[str, bytes]], policy: str | Policy = "Finance") -> "Session":
-        docs = [(n, extract_document(n, b)) for n, b in files]
-        sess = cls.from_texts([(n, d.text) for n, d in docs], policy)
+    def from_files(cls, files: list[tuple[str, bytes]], policy: str | Policy = "Finance",
+                   progress=None) -> "Session":
+        """``progress(message, fraction)`` reports reading each file, then finding names, for a progress bar."""
+        docs = _read_all(files, progress)
+        sess = cls.from_texts([(n, d.text) for n, d in docs], policy, _shifted(progress, READ_SHARE))
         sess.warnings = [d.warnings for _, d in docs]
         return sess
 
-    def add_files(self, files: list[tuple[str, bytes]]) -> list[str]:
+    def add_files(self, files: list[tuple[str, bytes]], progress=None) -> list[str]:
         """Add documents to this set. They join the same registry, so names already seen keep their pseudonyms
         and every earlier decision still applies. Returns the names as stored (duplicates get " (2)")."""
         # Freeze the pseudonyms already in use: a new file may reveal a role or a fuller name, but the
@@ -117,15 +152,14 @@ class Session:
         added = []
         offset = len(self.texts)
         new_texts = []
-        for name, data in files:
-            ex = extract_document(name, data)
+        for name, ex in _read_all(files, progress):
             stored, n = name, 2
             while stored in self.names or stored in added:
                 stored, n = f"{name} ({n})", n + 1
             added.append(stored)
             new_texts.append(ex.text)
             self.warnings.append(ex.warnings)
-        dets = detect(analyzer_for(self.policy), self.policy, new_texts)
+        dets = detect(analyzer_for(self.policy), self.policy, new_texts, _detect_progress(progress))
         self.detections = self.detections + [replace(d, doc=d.doc + offset) for d in dets]
         self.names = self.names + added
         self.texts = self.texts + new_texts

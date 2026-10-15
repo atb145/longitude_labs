@@ -27,7 +27,8 @@ def extract_text(filename: str, data: bytes) -> str:
     return extract_document(filename, data).text
 
 
-def extract_document(filename: str, data: bytes) -> Extracted:
+def extract_document(filename: str, data: bytes, progress=None) -> Extracted:
+    """``progress(done, total)`` is called after each PDF page, for a progress bar."""
     name = filename.lower()
     if name.endswith((".txt", ".md")):
         for enc in ("utf-8", "cp1252", "latin-1"):
@@ -36,7 +37,7 @@ def extract_document(filename: str, data: bytes) -> Extracted:
             except UnicodeDecodeError:
                 continue
     if name.endswith(".pdf"):
-        return _pdf(data)
+        return _pdf(data, progress)
     if name.endswith(".docx"):
         return _docx(data)
     if name.endswith((".htm", ".html")):
@@ -44,12 +45,14 @@ def extract_document(filename: str, data: bytes) -> Extracted:
     raise ValueError(f"Unsupported file type: {filename} (use {', '.join(SUPPORTED)})")
 
 
-def _pdf(data: bytes) -> Extracted:
+def _pdf(data: bytes, progress=None) -> Extracted:
     import pdfplumber
 
     pages, warnings = [], []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         for i, page in enumerate(pdf.pages, 1):
+            if progress:
+                progress(i - 1, len(pdf.pages))
             text = page.extract_text() or ""
             if page.images:
                 text += f"\n[Image removed: page {i}, {len(page.images)} image(s)]"
