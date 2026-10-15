@@ -70,8 +70,11 @@ keep_list:
     - '\b[A-Z][a-z]+(?:[-–][A-Z][a-z]+)+\s+(?:curve|estimator|model|method|test|formula|equation|value|option|options|distribution|index|ratio|plot|criterion|transform|theorem|algorithm|analysis|framework)\b'
     - '\b[A-Z][a-z]+(?:[-–][A-Z][a-z]+)*(?:’s|''s)?\s+(?:disease|syndrome|lymphoma|sarcoma|palsy|anomaly|reflex|law)\b'
     - '\b(?:Monte Carlo|Black-Scholes(?:-Merton)?|Kaplan-Meier|Fama-French|Cox (?:proportional|regression)|Sharpe ratio|Gini coefficient|Nash equilibrium|Pareto (?:optimal|efficient|principle)|Bayes(?:ian)?|Gaussian|Poisson|Bonferroni|Wilcoxon|Mann-Whitney|Kruskal-Wallis|Markowitz|Phillips curve|Laffer curve|Hodgkin(?:’s|''s)?)\b'
-    # Generic document furniture
+    # Generic document furniture: "Exhibit 99.1", "Annex C", "Article VI", "Section 5.3(c)", "Annex A-24"
     - '\b(?:Exhibit|Item|Schedule|Annex|Appendix)\s+\d+(?:\.\d+)*[A-Z]?\b'
+    - '\b(?i:Exhibit|Schedule|Annex|Appendix|Article|Section|Part|Chapter|Clause)\s+(?:[A-Z]{1,2}|[IVXLC]+|\d+)(?:[.\-–]\d+)*(?:\([a-z0-9]+\))*(?![\w-])'
+    # Public-health terms, never a party: "COVID-19" (also split over a line: "COVID-\n19"), "SARS-CoV-2"
+    - '(?i)\bCOVID(?:-\s*19)?(?![\w-])|\bSARS-CoV-2\b|\bcoronavirus\b'
 
 # Context tools: words around a name that make it a party to the engagement (edge case 1.1).
 party_cues:
@@ -143,7 +146,7 @@ generic_domains: [gmail, googlemail, yahoo, outlook, hotmail, live, msn, icloud,
 
 # Words detectors confuse with names, in any vertical.
 not_entities: [Press Release, Investor Presentation, Exhibit, Exhibits, Item, Schedule, Annex, Appendix, Form,
-               Section, Rule, Act, Agreement, Registrant, Report, Current Report, Annual Report, Signatures,
+               Section, Article, Articles, Rule, Act, Agreement, Registrant, Report, Current Report, Annual Report, Signatures,
                Media Relations, Investor Relations, Overview, Summary, Background, Introduction, Conclusion,
                State, Commission File, Zip Code, Emerging Growth Company, Common Stock, Notes,
                Privileged & Confidential, Privileged and Confidential, Confidential, Strictly Confidential,

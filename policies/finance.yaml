@@ -163,6 +163,38 @@ keep_list:
     - New York Regional Office
     - Regional Office
     - Federal Rules of Civil Procedure
+    # Public regulators and courts named in filings (public bodies, never the contributor's counterparty)
+    - Federal Trade Commission
+    - FTC
+    - DOJ
+    - U.S. Department of Justice
+    - Antitrust Division
+    - Department of the Treasury
+    - U.S. Treasury Department
+    - Office of Foreign Assets Control
+    - OFAC
+    - FinCEN
+    - Financial Crimes Enforcement Network
+    - CFIUS
+    - Committee on Foreign Investment in the United States
+    - CFTC
+    - Commodity Futures Trading Commission
+    - PCAOB
+    - Public Company Accounting Oversight Board
+    - FASB
+    - Financial Accounting Standards Board
+    - FDIC
+    - European Commission
+    - European Union
+    - Competition and Markets Authority
+    - State Administration for Market Regulation
+    - SAMR
+    - CMA
+    - EFTA
+    - European Free Trade Association
+    - Delaware Court of Chancery
+    - Court of Chancery
+    - Supreme Court
   patterns:
     - '(?i)United States (?:District )?Court(?: of Appeals)?(?: for the [A-Z][\w\s]+?)?(?=[\n,.;])'
     - '(?i)\b(?:Southern|Northern|Eastern|Western|Central|Middle) District of [A-Z][a-z]+(?: [A-Z][a-z]+)?'
@@ -187,12 +219,18 @@ not_entities: [CRD, CRD No, CFO, CEO, COO, CCO, SSN, EIN, CUSIP, MNPI, ATS, Comm
                Plaintiff, Defendant, Defendants, Relief Defendant, Relief Defendants, Court, Staff, Order,
                Complaint, Division, Re, Exchange, Board, Board of Directors, Account, Accounts, Fund, Funds,
                Venue, Son, Daughter, Friend, Wife, Husband, Brother, Sister, Announcement, Relevant Period,
-               Trust, Trustee, Issuer, Company, Individual, Defendants’, Investment Advisers]
+               Trust, Trustee, Issuer, Company, Individual, Defendants’, Investment Advisers,
+               # finance vocabulary the language model tags as companies
+               GAAP, Non-GAAP, EBIT, EBITDA, Adjusted EBITDA, LTM, NTM, EPS, CAGR, WACC, DCF, NOL, NOLs, NOPAT,
+               PSU, PSUs, RSU, RSUs, ERISA, COBRA, UCC, FCPA, D&O, D&O Insurance, Medicare, Medicaid]
 
 # Words that get glued onto the front of a name by detectors ("Defendants Meyer Global LLC").
 name_noise_words: [defendant, defendants, plaintiff, relief, respondent, against, former, another, sold, bought,
                    misappropriate, misappropriated, through, via, from, to, by, the, a, an, each, both, certain,
-                   other, its, his, her, their, including, and, or, of, pre-ipo, pursuant, between, with]
+                   other, its, his, her, their, including, and, or, of, pre-ipo, pursuant, between, with,
+                   # what follows a company's name is not part of it: "Activision Blizzard Board of Directors",
+                   # "Activision Blizzard Common Stock Beneficially Owned"
+                   board, directors, common, stock, stockholders, shareholders, shares, beneficially, owned]
 
 # Ticker lookup: every symbol on the SEC's company_tickers list (ticker → registrant name). A bare "MSFT" is
 # redacted, and the company it stands for ("MICROSOFT CORP") is treated as a party too.
