@@ -40,7 +40,7 @@ from engine import (Session, available_policies, consistency_check, load_policy,
                     search)
 from engine.export import FORMATS, buyer_zip, internal_log_csv, render_file
 from engine.extract import SUPPORTED
-from engine.registry import GENERIC_ORG_WORDS, norm_form, split_key, type_title
+from engine.registry import GENERIC_ORG_WORDS, deleted_text, norm_form, split_key, type_title
 
 SAMPLES = Path(__file__).parent / "samples"
 TYPE_NAMES = {
@@ -186,8 +186,12 @@ def inject_css() -> None:
     .st-key-stepnav { margin-top: .4rem; }
     /* Streamlit pulls every markdown block up 1rem to cancel a last paragraph's margin. Rows built from our own
        HTML (no paragraph) then sit on the card's border or the button below; give them back that space. */
-    [data-testid="stMarkdownContainer"]:has(> :is(.qrow, .hit-row, .lib-sum):last-child) { margin-bottom: 0; }
-    .st-key-selall { align-items: flex-end; margin-bottom: -.6rem; }
+    [data-testid="stMarkdownContainer"]:has(> :is(.qrow, .hit-row, .lib-sum, .checked):last-child) { margin-bottom: 0; }
+    .checked-row { padding: .55rem 0; border-bottom: 1px solid var(--rule); font-size: .95rem; overflow-wrap: anywhere; }
+    .checked-row:last-child { border-bottom: 0; }
+    .checked-row .st { font-size: .8rem; color: var(--dim); margin-left: .4rem; }
+    .lib-ask { font-family: var(--serif); font-size: 1.25rem; margin: .2rem 0 .1rem; }
+    .st-key-selall { align-items: flex-start; padding-left: 1rem; margin-bottom: -.6rem; }
     .st-key-selall [data-testid="stCheckbox"] { width: auto; }
     .st-key-selall [data-testid="stCheckbox"] label { font-size: .85rem; }
     /* Busy indicator: a "Working…" pill, top right, whenever the app is processing (fades in after .25s) */
@@ -599,6 +603,22 @@ def sentence_context(text: str, start: int, end: int) -> tuple[str, str, str, st
             _flat(text[end:cuts[j]], 420, "start"), _flat(nxt, 320, "start"))
 
 
+def anonymized_html(res, doc: int, start: int, end: int) -> str:
+    """The text between start and end as it reads in the output: what's already hidden shows as its label, so a
+    sentence to rewrite is shown as it is now, not as the original."""
+    text, out, pos = res.texts[doc], [], start
+    flat = lambda t: html.escape(re.sub(r"\s+", " ", t))
+    for g in sorted(res.segments[doc], key=lambda g: g.start):
+        if g.kind != "entity" or g.start < pos or g.end > end:
+            continue
+        out.append(flat(text[pos:g.start]))
+        if g.replacement:
+            out.append(f'<span class="chip t-{color_type(g.type)}">{html.escape(g.replacement)}</span>')
+        pos = g.end
+    out.append(flat(text[pos:end]))
+    return "".join(out).strip()
+
+
 def context_html(res, doc: int, start: int, end: int, neighbours: bool = True) -> str:
     prev, before, mid, after, nxt = sentence_context(res.texts[doc], start, end)
     core = f'{html.escape(before)}<mark>{html.escape(mid)}</mark>{html.escape(after)}'
@@ -999,7 +1019,7 @@ def confirm_start_over() -> None:
 
 
 def start_view(sess: Session, res) -> None:
-    """Step 1 while a set is open: the files, names to always hide, labels, add more."""
+    """Step 1 while a set is open: the files, add more, labels. (Next is the button at the bottom.)"""
     st.markdown('<h2>Your files</h2>', unsafe_allow_html=True)
     label("Add files to this set")
     add_documents_form(sess, "start_add")
@@ -1010,19 +1030,6 @@ def start_view(sess: Session, res) -> None:
              "notes": "; ".join(w["message"] for w in (sess.warnings[i] if i < len(getattr(sess, 'warnings', []) or []) else []))}
             for i, name in enumerate(res.names)]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    open_items = sum(res.item(k).status == "pending" for k in res.queue)
-    n_ok = sum(is_current(sess, res, i) for i in range(len(res.names)))
-    nxt = (("Continue checking →", "Review") if open_items else
-           ("Read & approve →", "Documents") if n_ok < len(res.names) else ("Go to download →", "Final"))
-    c1, c2, _ = st.columns([1.5, 1.2, 2])
-    c1.button(nxt[0], type="primary", width="stretch", on_click=lambda v=nxt[1]: st.session_state.update(view=v))
-    if c2.button("Start over", width="stretch", key="files_start_over"):
-        confirm_start_over()
-    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
-    label("Names to always hide")
-    st.caption("Know who the parties are? Add them — every spelling is hidden in every file, whatever the "
-               "detectors find. Most reliable for clients, counterparties and codenames.")
-    known_parties_form(sess, res, "files_parties")
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     label("Labels")
     st.caption("Rename a label (Company B → Receiving bank). Each label is used for one name only.")
@@ -1144,13 +1151,33 @@ def queue_rows(sess: Session, res, items: list) -> None:
                 f'<div class="qrow"><div class="qrow-top"><span class="card-type">{html.escape(item_kind(sess, k, it))}'
                 f'</span><span class="dim">{html.escape(res.names[doc])} · {n} place{"s" if n != 1 else ""}</span></div>'
                 f'<div class="qrow-main">{change}</div>'
-                f'<div class="qrow-ctx">{context_html(res, doc, s0, e0, neighbours=False)}</div></div>',
+                f'<div class="qrow-ctx">{anonymized_html(res, doc, s0, e0) if sentence else context_html(res, doc, s0, e0, neighbours=False)}'
+                '</div></div>',
                 unsafe_allow_html=True)
             c2.button("Open", key=f"open_{k}", width="stretch", on_click=open_item, args=(k,),
                       help="Change the label, the type or the wording")
 
 
 REVIEW_MODES = {"list": "All at once", "one": "One at a time"}
+CHECKED_WORDS = {"accepted": "hidden", "edited": "your wording", "kept": "kept as written", "manual": "hidden by you"}
+
+
+def checked_list(res, queue: list[str]) -> None:
+    """Every item you answered in ② Check, as it now reads."""
+    rows = []
+    for k in queue:
+        it = res.item(k)
+        doc = it.mentions[0][0]
+        word = CHECKED_WORDS.get(it.status, STATUS_WORDS.get(it.status, it.status))
+        if k.startswith("F|") and getattr(it, "scope", "") == "sentence":
+            main = f'Sentence: {html.escape(_flat(it.replacement_for(it.text), 160, "start"))}'
+        else:
+            found = it.text if k.startswith("F|") else it.canonical
+            shown = it.replacement_for(found)
+            main = (f'<b>{html.escape(found)}</b>' + (f' → <b>{html.escape(shown)}</b>' if shown != found else ""))
+        rows.append(f'<div class="checked-row">{main}<span class="st">{html.escape(word)} · '
+                    f'{html.escape(short(res.names[doc], 30))}</span></div>')
+    st.markdown(f'<div class="checked">{"".join(rows)}</div>', unsafe_allow_html=True)
 
 
 def review(sess: Session, res) -> None:
@@ -1176,12 +1203,13 @@ def review(sess: Session, res) -> None:
     if not pending:
         st.markdown('<h2>Everything is checked</h2>', unsafe_allow_html=True)
         st.markdown(f'<p class="ll-note">{sum(e.status == "auto" for e in res.entities)} clear cases were hidden '
-                    'automatically. Next: read each file and approve it.</p>', unsafe_allow_html=True)
-        c1, c2, _ = st.columns([1.6, 1.4, 1.6])
-        c1.button("Read & approve →", type="primary", width="stretch",
-                  on_click=lambda: st.session_state.update(view="Documents"))
-        if c2.button("＋ Add files", width="stretch", key="rv_add_done"):
+                    'automatically.</p>', unsafe_allow_html=True)
+        c1, _ = st.columns([1.4, 3])
+        if c1.button("＋ Add files", width="stretch", key="rv_add_done"):
             add_documents_dialog(sess)
+        if queue:
+            label("What you checked")
+            checked_list(res, queue)
         return
 
     if (st.session_state.get("review_mode") or "list") == "list":
@@ -1203,7 +1231,7 @@ def review(sess: Session, res) -> None:
     st.markdown(
         f'<div class="card"><div class="card-top"><span class="card-type">{html.escape(etype)}</span>'
         f'<span class="dim">{html.escape(res.names[doc])} · {n} place{"s" if n != 1 else ""}</span></div>'
-        f'<div class="card-ctx">{context_html(res, doc, s, e)}</div>'
+        f'<div class="card-ctx">{anonymized_html(res, doc, s, e) if sentence else context_html(res, doc, s, e)}</div>'
         '<dl class="kv">'
         + ("" if sentence else f'<dt>Found</dt><dd class="big">{html.escape(shown)}</dd>')
         + (f'<dt>Becomes</dt><dd class="big">{html.escape(item.proposed)}</dd>' if not sentence
@@ -1929,7 +1957,7 @@ def documents(sess: Session, res) -> None:
                 st.session_state.doc_pick = todo[0]
                 st.session_state.focus_note = f"Approved {res.names[doc]} — next: {res.names[todo[0]]}"
             else:
-                st.session_state.focus_note = "Every file is approved — go to ④ Download"
+                st.session_state.focus_note = "Every file is approved — ④ Download is next, at the bottom"
 
         a1.button("✓ Approve again" if stale else ("✓ Approve and open next" if approved < n - 1 else "✓ Approve"),
                   type="primary", width="stretch", key=f"approve_{doc}", on_click=approve_and_advance)
@@ -1937,10 +1965,6 @@ def documents(sess: Session, res) -> None:
         bearing(approved, n, "Files", "approved", tight=True,
                 note=f'{len(open_here)} item{"s" if len(open_here) != 1 else ""} in this file still '
                      f'need{"s" if len(open_here) == 1 else ""} a look' if open_here else "")
-    if approved == n:
-        st.success("Every file is approved.")
-        st.button("Go to ④ Download →", type="primary", key="to_final",
-                  on_click=lambda: st.session_state.update(view="Final"))
     if stale:
         st.warning("Changed since you approved it. Approve again to update the package.")
     release_box(sess, res)
@@ -1971,10 +1995,6 @@ def final_view(sess: Session, res) -> None:
     st.markdown(f'<h2>{"Ready to share" if ready else "Almost ready"}</h2><div class="check">' + "<br>".join(
         f'<span class="{"ok" if ok else "warn"}">{"✓" if ok else "○"}</span>&nbsp; {html.escape(t)}' for ok, t in checks)
         + "</div>", unsafe_allow_html=True)
-    todo = [i for i in range(n) if not is_current(sess, res, i)]
-    if todo:
-        st.button("Approve the rest →", key="final_to_docs",
-                  on_click=lambda: st.session_state.update(view="Documents", doc_pick=todo[0]))
     blocked = bool(release_box(sess, res))   # always visible, so leaks surface before anything is approved
     if items:
         names = [res.names[d] for d, _ in items]
@@ -2008,6 +2028,7 @@ def final_view(sess: Session, res) -> None:
         st.info("Nothing approved yet.")
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     audit_trail(sess, res)
+    library_offer(sess, res)
 
 
 # --------------------------------------------------------------------------- log & consistency
@@ -2068,27 +2089,76 @@ def library_summary(entry: dict) -> str:
             + (f' · {fixes} correction{"s" if fixes != 1 else ""}' if fixes else ""))
 
 
-def send_to_library(sess: Session) -> None:
+def manual_changes(sess: Session, res) -> list[tuple[str, str, str, object]]:
+    """Everything changed by hand in this set, one line each: (id, what it says, ops key, which entry)."""
+    by_key = {e.key: e for e in res.entities}
+    name = lambda k: by_key[k].canonical if k in by_key else deleted_text(k)
+    label_of = lambda k: by_key[k].label if k in by_key else deleted_text(k)
+    ops, out = sess.ops, []
+    for k, v in (ops.get("labels") or {}).items():
+        out.append((f"labels:{k}", f"Label: {name(k)} → {v}", "labels", k))
+    for i, p in enumerate(ops.get("parties") or []):
+        out.append((f"parties:{i}", f"Always hide: {p['name']}", "parties", i))
+    for i, m in enumerate(ops.get("manual") or []):
+        kind = m.get("type") or "MANUAL"
+        out.append((f"manual:{i}", f"Hidden by hand: {' '.join(m['text'].split())}"
+                    + (f" ({cat_name(kind)})" if kind != "MANUAL" else ""), "manual", i))
+    for i, (k, text) in enumerate(ops.get("aliases") or []):
+        out.append((f"aliases:{i}", f"Hidden as {label_of(k)}: {' '.join(text.split())}", "aliases", i))
+    for i, k in enumerate(ops.get("deleted") or []):
+        out.append((f"deleted:{i}", f"Not a name, left as written: {deleted_text(k)}", "deleted", i))
+    for k, t in (ops.get("retype") or {}).items():
+        out.append((f"retype:{k}", f"{name(k)} is {a_noun(t)}", "retype", k))
+    for i, (src, dst) in enumerate(ops.get("merges") or []):
+        out.append((f"merges:{i}", f"{deleted_text(src)} is the same as {label_of(dst)}", "merges", i))
+    for i, op in enumerate(ops.get("splits") or []):
+        out.append((f"splits:{i}", f"Separated “{op[1]}”", "splits", i))
+    if ops.get("decisions"):
+        out.append(("decisions", f"Your answers in ② Check ({len(ops['decisions'])})", "decisions", None))
+    return out
+
+
+def send_to_library(sess: Session, items: list) -> None:
+    """Save the ticked lines (and the settings, if ticked) as a Library entry."""
+    import copy
     from datetime import date
+    picked = [it for it in items if st.session_state.get(f"libpick_{it[0]}", True)]
+    ops: dict = {}
+    for _, _, key, ref in picked:
+        if key == "decisions":
+            ops["decisions"] = copy.deepcopy(sess.ops["decisions"])
+        elif key in ("labels", "retype"):
+            ops.setdefault(key, {})[ref] = sess.ops[key][ref]
+        elif key != "settings":
+            ops.setdefault(key, []).append(copy.deepcopy(sess.ops[key][ref]))
+    settings = sess.settings if any(key == "settings" for _, _, key, _ in picked) else {}
     name = " ".join(st.session_state.get("lib_name", "").split()) or f"{sess.policy.name} set"
     d = date.today()
-    library_entries().insert(0, library_entry(name, f"{d:%b} {d.day}, {d.year}", sess.policy, sess.settings,
-                                              sess.ops))
+    library_entries().insert(0, library_entry(name, f"{d:%b} {d.day}, {d.year}", sess.policy, settings, ops))
     st.session_state.focus_note = f"Saved to Library: “{name}”"
 
 
-def send_to_library_box(sess: Session) -> None:
-    """End of ② Check: save this setup to the Library."""
+def library_offer(sess: Session, res) -> None:
+    """After the label key: would you like to send this to the Library for reuse? Tick what to keep."""
     from datetime import date
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     label("Library")
-    st.caption("Save this setup — which rules are on, plus your labels and corrections — to reuse on the next set.")
-    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")  # the row spans the width, like the text above
+    st.markdown('<p class="lib-ask">Would you like to send this to the Library for reuse?</p>', unsafe_allow_html=True)
+    st.caption("Tick what to keep. “Use again” starts your next set with it.")
+    disabled = sess.settings.get("disabled") or []
+    on = sum(bid not in disabled for _, bid, _, _ in sess.policy.buckets())
+    items = [("settings", f"Settings and rule switches ({on} on)", "settings", None)] + manual_changes(sess, res)
+    for iid, text, _, _ in items:
+        st.session_state.setdefault(f"libpick_{iid}", True)
+        st.checkbox(text, key=f"libpick_{iid}")
+    if len(items) == 1:
+        st.caption("Nothing was changed by hand in this set, so only the settings would be kept.")
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
     d = date.today()
     c1.text_input("Name", f"{sess.policy.name} set · {d:%b} {d.day}", key="lib_name",
                   label_visibility="collapsed")
     c2.button("Send to Library", type="primary", width="stretch", key="lib_send", on_click=send_to_library,
-              args=(sess,))
+              args=(sess, items))
 
 
 def use_library_entry(i: int, start_over: bool = False) -> None:
@@ -2150,23 +2220,26 @@ def library_banner() -> None:
 STEP_NAMES = {"Start": "① Files", "Review": "② Check", "Documents": "③ Read & approve", "Final": "④ Download"}
 
 
-def go_to(view: str) -> None:
+def go_to(view: str, doc: int | None = None) -> None:
     st.session_state.view = view
+    if doc is not None:
+        st.session_state.doc_pick = doc
     st.session_state.scroll_top = True  # the new step opens at its top, not where the old one was scrolled to
 
 
-def step_nav(view: str) -> None:
-    """← Back / Next → at the bottom of every step, so a long page never sends you back up to the step bar."""
+def step_nav(view: str, done: bool = False, todo_doc: int | None = None) -> None:
+    """← Back / Next → at the bottom of every step: the only buttons that change step, so none is repeated on the
+    page. Next turns blue once this step is done (everything checked, every file approved)."""
     i = VIEWS.index(view)
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     with st.container(key="stepnav"):
         c1, c2 = st.columns(2)
         if i > 0:
-            c1.button(f"← Back: {STEP_NAMES[VIEWS[i - 1]]}", key="nav_back", width="stretch",
-                      on_click=go_to, args=(VIEWS[i - 1],))
+            c1.button(f"← Back: {STEP_NAMES[VIEWS[i - 1]]}", key="nav_back", width="stretch", on_click=go_to,
+                      args=(VIEWS[i - 1], todo_doc if VIEWS[i - 1] == "Documents" else None))
         if i + 1 < len(VIEWS):
-            c2.button(f"Next: {STEP_NAMES[VIEWS[i + 1]]} →", key="nav_next", width="stretch",
-                      on_click=go_to, args=(VIEWS[i + 1],))
+            c2.button(f"Next: {STEP_NAMES[VIEWS[i + 1]]} →", key="nav_next", width="stretch", on_click=go_to,
+                      args=(VIEWS[i + 1],), type="primary" if done else "secondary")
     if st.session_state.pop("scroll_top", False):
         import time
         st.html(f"<script>/* {time.time()} */ document.querySelector('[data-testid=\"stMain\"]')"
@@ -2220,6 +2293,9 @@ else:
             unsafe_allow_javascript=True)
     st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
     {"Start": start_view, "Review": review, "Documents": documents, "Final": final_view}[view](sess, res)
-    if view == "Review":
-        send_to_library_box(sess)
-    step_nav(view)
+    res = sess.run()  # a click on this step may have changed what's done
+    n_ok = sum(is_current(sess, res, i) for i in range(len(res.names)))
+    todo_doc = next((i for i in range(len(res.names)) if not is_current(sess, res, i)), None)
+    done = {"Start": True, "Review": not any(res.item(k).status == "pending" for k in res.queue),
+            "Documents": n_ok == len(res.names)}.get(view, False)
+    step_nav(view, done, todo_doc)
