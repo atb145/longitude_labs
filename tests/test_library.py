@@ -1,4 +1,4 @@
-"""The Library prototype: save a setup at the end of ② Check, see it in the Library, use it on the next set."""
+"""The Library prototype: save a setup on ④ Download, see it in the Library, use it on the next set."""
 import pathlib
 
 from streamlit.testing.v1 import AppTest
@@ -30,6 +30,8 @@ def test_send_to_library_then_use_again():
     at.session_state.b_URL = False  # switch one rule off in the sidebar
     at.run()
 
+    at.session_state.view = "Final"  # the Library offer sits after the label key, on ④ Download
+    at.run()
     at.text_input(key="lib_name").set_value("Mercer complaint set").run()
     click(at, "Send to Library")
     assert not at.exception
