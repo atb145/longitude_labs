@@ -7,7 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def sample():
-    s = Session.from_texts([(p.name, p.read_text()) for p in sorted((ROOT / "samples").glob("*.txt"))])
+    s = Session.from_texts([(p.name, p.read_text()) for p in sorted((ROOT / "tests" / "fixtures" / "sample_case").glob("*.txt"))])
     return s, s.run()
 
 

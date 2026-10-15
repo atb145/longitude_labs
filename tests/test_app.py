@@ -48,7 +48,7 @@ def test_sample_flow_all_views():
 
 def test_add_documents_keeps_pseudonyms():
     from engine import Session
-    root = pathlib.Path(APP).parent / "samples"
+    root = pathlib.Path(APP).parent / "tests" / "fixtures" / "sample_case"
     files = sorted(root.glob("*.txt"))
     s = Session.from_files([(f.name, f.read_bytes()) for f in files[:1]])
     first = {e.key: e.label for e in s.run().entities if e.type == "PERSON"}
@@ -67,7 +67,7 @@ def test_upload_needs_rights_checkbox():
 def test_old_session_is_upgraded_not_crashing():
     """A viewer's session created by an older app version (no warnings/VERSION) is rebuilt, not a crash."""
     from types import SimpleNamespace
-    root = pathlib.Path(APP).parent / "samples"
+    root = pathlib.Path(APP).parent / "tests" / "fixtures" / "sample_case"
     files = sorted(root.glob("*.txt"))
     old = SimpleNamespace(names=[f.name for f in files], texts=[f.read_text() for f in files],
                           ops={"decisions": {}, "history": []}, approved={}, policy=None, settings={})
@@ -121,7 +121,7 @@ def test_session_from_previous_engine_is_rebuilt_even_with_matching_version():
     still reports the current VERSION must be rebuilt, not used."""
     from types import SimpleNamespace
     from engine import Session
-    root = pathlib.Path(APP).parent / "samples"
+    root = pathlib.Path(APP).parent / "tests" / "fixtures" / "sample_case"
     files = sorted(root.glob("*.txt"))
     stale = SimpleNamespace(VERSION=Session.VERSION, names=[f.name for f in files], texts=[f.read_text() for f in files],
                             ops={"decisions": {}, "history": []}, approved={}, policy=None, settings={},
@@ -269,7 +269,7 @@ def test_repeated_category_and_likely_label():
     h = _helpers()
     from engine import Session
     s = Session.from_texts([(p.name, p.read_text()) for p in
-                            sorted((pathlib.Path(APP).parent / "samples").glob("*.txt"))])
+                            sorted((pathlib.Path(APP).parent / "tests" / "fixtures" / "sample_case").glob("*.txt"))])
     s.redact("47", "OTHER:Age", "", "Age {1}")
     res = s.run()
     assert h["existing_category"](s, res, "age") == "OTHER:Age"          # typed again: it's the same field
@@ -333,3 +333,22 @@ def test_select_all_tick_box_replaces_all_and_none():
     at.checkbox(key="sel_all").uncheck().run()                   # click again: the box and every row empty
     assert not any(at.session_state[f"pick_{k}"] for k in pending)
     assert not at.checkbox(key="sel_all").value
+
+
+def test_bundled_sample_is_the_two_sec_8ks(monkeypatch):
+    """The real "Try with sample case": Microsoft's 8-K announcing the Activision Blizzard deal and Activision
+    Blizzard's 8-K closing it, named the way a deal team files them."""
+    monkeypatch.setenv("ANONYMIZER_SAMPLES", str(pathlib.Path(APP).parent / "samples"))
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    assert not at.exception, at.exception
+    sess = at.session_state.session
+    assert sess.names == ["1 MSFT 8-K 2022-01-18 - Activision Blizzard deal announced.pdf",
+                          "2 ATVI 8-K 2023-10-13 - Microsoft merger completed.pdf"]
+    res = sess.run()
+    for name in ("Microsoft Corporation", "Activision Blizzard, Inc.", "Keith R. Dolliver", "91-1144442"):
+        assert all(name not in out for out in res.outputs), name
+    for view in ("Start", "Review", "Documents", "Final"):
+        at.session_state.view = view
+        at.run()
+        assert not at.exception, (view, at.exception)

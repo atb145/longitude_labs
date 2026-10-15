@@ -7,6 +7,7 @@ import functools
 import json
 import html
 import io
+import os
 import re
 import zipfile
 from collections import Counter
@@ -42,7 +43,9 @@ from engine.export import FORMATS, buyer_zip, internal_log_csv, render_file
 from engine.extract import SUPPORTED
 from engine.registry import GENERIC_ORG_WORDS, norm_form, split_key, type_title
 
-SAMPLES = Path(__file__).parent / "samples"
+# Bundled demo: two public SEC filings on Microsoft's acquisition of Activision Blizzard. ANONYMIZER_SAMPLES points
+# "Try with sample case" at another folder (the tests use a small fictional case).
+SAMPLES = Path(os.environ.get("ANONYMIZER_SAMPLES") or Path(__file__).parent / "samples")
 TYPE_NAMES = {
     "PERSON": "Person", "ORGANIZATION": "Organization", "ACCOUNT_NUMBER": "Account number",
     "CRD_NUMBER": "CRD number", "CUSIP": "CUSIP", "TICKER": "Ticker", "CASE_NUMBER": "Case / docket number",
@@ -683,11 +686,11 @@ def home() -> None:
             st.error(str(exc))
     if c2.button("Try with sample case", width="stretch"):
         start_session([(p.name, p.read_bytes()) for p in sorted(SAMPLES.glob("*")) if p.suffix in SUPPORTED], pol,
-                      rights=True)  # fictional placeholder documents
+                      rights=True)  # public SEC filings
         st.rerun()
     if not (uploads and rights):
-        st.caption("Add files and tick the box to continue — or try the sample: a complaint, a staff memo and a "
-                   "settlement order from one fictional matter.")
+        st.caption("Add files and tick the box to continue — or try the sample: two public SEC filings on Microsoft's "
+                   "acquisition of Activision Blizzard, the 8-K announcing the deal (2022) and the 8-K closing it (2023).")
     st.caption("Nothing is saved. Refreshing or closing this tab clears your work — download first.")
 
 
