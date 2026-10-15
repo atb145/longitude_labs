@@ -37,7 +37,7 @@ from engine import (Session, available_policies, consistency_check, load_policy,
                     search)
 from engine.export import FORMATS, buyer_zip, internal_log_csv, render_file
 from engine.extract import SUPPORTED
-from engine.registry import norm_form, split_key, type_title
+from engine.registry import GENERIC_ORG_WORDS, norm_form, split_key, type_title
 
 SAMPLES = Path(__file__).parent / "samples"
 TYPE_NAMES = {
@@ -45,7 +45,8 @@ TYPE_NAMES = {
     "CRD_NUMBER": "CRD number", "CUSIP": "CUSIP", "TICKER": "Ticker", "CASE_NUMBER": "Case / docket number",
     "EMAIL_ADDRESS": "Email", "PHONE_NUMBER": "Phone", "US_SSN": "SSN", "STREET_ADDRESS": "Street address",
     "DATE": "Date", "FLAG": "Flag", "MANUAL": "Manual redaction", "MONEY": "Amount", "SHARE_COUNT": "Share count",
-    "URL": "Website", "TAX_ID": "Tax ID",
+    "URL": "Website", "TAX_ID": "Tax ID", "SHARE_PRICE": "Share price", "JOB_TITLE": "Job title",
+    "POSTAL_CODE": "ZIP code",
 }
 TYPE_COLORS = {  # restrained hues; used at low alpha so they read on cream and on charcoal
     "PERSON": "120,195,228", "ORGANIZATION": "205,170,120", "ACCOUNT_NUMBER": "29,181,218",
@@ -78,6 +79,10 @@ def inject_css() -> None:
     .ll-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:.4rem; }
     .ll-word { font-family:var(--serif); font-size:1.35rem; font-weight:500; }
     [data-testid="stSidebar"][aria-expanded="true"] { min-width: 300px; }  /* closed sidebar must free its space */
+    /* The sidebar is one scroll area; a name's controls open inside it (not in a floating box), so they scroll too */
+    [data-testid="stSidebarContent"] { overflow-y: auto !important; overscroll-behavior: contain; }
+    /* No link icons next to headings */
+    [data-testid="stHeaderActionElements"] { display: none !important; }
     /* Layout reacts to the space the content actually has (sidebar open or closed), not the window */
     [data-testid="stMainBlockContainer"] { container-type: inline-size; }
     .ll-head { flex-wrap: wrap; row-gap: .35rem; }
@@ -114,6 +119,7 @@ def inject_css() -> None:
     .track { position:relative; height:8px; border-radius:999px; background:var(--rule); overflow:hidden; }
     .track .fill { position:absolute; inset:0 auto 0 0; border-radius:999px; background:var(--soft); }
     .track .mark { display:none; }
+    .fix-note { font-size:.85rem; color:var(--dim); margin-top:.5rem; }  /* same size and gap as the row above */
 
     /* review card */
     .card { border:1px solid var(--rule); border-radius:1.2rem; padding:1.6rem 1.8rem 1.2rem; margin-bottom:1rem; }
@@ -171,6 +177,11 @@ def inject_css() -> None:
     [data-testid="stSidebar"] [data-testid="stPopover"] button { justify-content: flex-start; text-align: left; }
     [data-testid="stButtonGroup"] div:has(> button) { flex-wrap: wrap; row-gap: .3rem; }
     [data-testid="stSidebar"] [data-testid="stPopover"] button p { text-align: left; }
+    .st-key-entlist .stButton button { justify-content: flex-start; text-align: left; white-space: normal; }
+    .st-key-entlist .stButton button > div, .st-key-entlist .stButton button > div > span { justify-content: flex-start; }
+    .st-key-entlist .stButton button p { text-align: left; }
+    .st-key-entlist [class*="st-key-ented-"] { padding: .7rem .75rem; margin: -.2rem 0 .3rem; }
+    .st-key-stepnav { margin-top: .4rem; }
     /* Busy indicator: a "Working…" pill, top right, whenever the app is processing (fades in after .25s) */
     [data-testid="stApp"][data-test-script-state="running"]::after {
         content: "Working…"; position: fixed; top: .75rem; right: 1rem; z-index: 100000; box-sizing: border-box;
@@ -349,6 +360,56 @@ def color_type(t: str) -> str:
     return t if t in TYPE_COLORS else "MANUAL"
 
 
+def cat_name(t: str) -> str:
+    """A category in a dropdown: "Person", "Company", "CRD number", "Age", "Other"."""
+    return KIND_NAMES.get(t) or type_name(t)
+
+
+def noun(t: str) -> str:
+    """A type as it reads mid-sentence: "person", "company", "CRD number", "account number", "age"."""
+    if t in ("PERSON", "ORGANIZATION", "MANUAL"):
+        return {"PERSON": "person", "ORGANIZATION": "company", "MANUAL": "item"}[t]
+    name = type_name(t)
+    return name if name[1:2].isupper() else name[:1].lower() + name[1:]
+
+
+def a_noun(t: str) -> str:
+    """The type with its article: "a person", "an account number", "an SSN", "a CRD number"."""
+    n = noun(t)
+    acronym = n.split()[0].isupper()
+    vowel_sound = n[:1] in ("AEFHILMNORSX" if acronym else "aeiou")
+    return f"{'an' if vowel_sound else 'a'} {n}"
+
+
+def categories(sess: Session, res, keep: str = "") -> list[str]:
+    """Every category a name or value can be put in: person, company, the rules' redacted types, the categories
+    you made yourself ("OTHER:Age" — offered everywhere as soon as one exists), and plain "Other"."""
+    ops = sess.ops
+    made = [t for t in dict.fromkeys([e.type for e in res.entities]
+                                     + [m.get("type") or "" for m in ops.get("manual", [])]
+                                     + [p.get("type") or "" for p in ops.get("parties", [])]
+                                     + list((ops.get("retype") or {}).values()))
+            if t.startswith("OTHER:")]
+    built_in = ["PERSON", "ORGANIZATION"] + [t for t, sp in sess.policy.entities.items() if sp.get("action") == "redact"]
+    out = list(dict.fromkeys(built_in + sorted(made, key=str.lower) + ["MANUAL"]))
+    return out + ([keep] if keep and keep not in out else [])
+
+
+def _cat_word(text: str) -> str:
+    t = " ".join(text.split()).casefold()
+    return t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") else t  # "Ages" is "Age"
+
+
+def existing_category(sess: Session, res, desc: str) -> str | None:
+    """The category a typed description already is ("age" → OTHER:Age, "account number" → ACCOUNT_NUMBER), so
+    the same field isn't created twice."""
+    want = _cat_word(desc)
+    if not want:
+        return None
+    return next((t for t in categories(sess, res) if t != "MANUAL"
+                 and want in {_cat_word(type_name(t)), _cat_word(noun(t)), _cat_word(cat_name(t))}), None)
+
+
 def examples(e, k: int = 3) -> str:
     seen = []
     for m in e.mentions:
@@ -379,40 +440,52 @@ def do_split(sess: Session, ent, form: str, dest: str) -> None:
         new_type = None if dest[4:] == ent.type else dest[4:]
         sess.split(ent.key, form, new_type, note=f"Separate “{form}” from {ent.label}")
         st.session_state.focus = split_key(ent.key, ent.type, form, new_type)
-        where = f"a new {KIND_NAMES.get(new_type or ent.type, type_name(new_type or ent.type)).lower()}"
+        where = f"a new {noun(new_type or ent.type)}"
     else:
         sess.split(ent.key, form, None, dest, note=f"Move “{form}” out of {ent.label}")
         st.session_state.focus = dest
-        where = "the one you picked"
+        where = "the label you picked"
     st.session_state.focus_note = f"“{form}” is now separate from {ent.label} ({where})"
 
 
-def split_controls(sess: Session, res, ent, key: str) -> None:
-    """Pick a written form, then where all its variants go: a new entry (any type) or an existing entity."""
+def form_groups(ent) -> dict[str, list]:
+    """Written forms that go together when splitting ("Okafor", "Mr. Okafor"): {norm: [[forms], count]}."""
     groups: dict[str, list] = {}
     for f, _, cnt, _, _ in forms_of(ent):
         g = groups.setdefault(norm_form(ent.type, f), [[], 0])
         g[0].append(" ".join(f.split()))
         g[1] += cnt
-    form = st.selectbox("Which way of writing it is someone else?", list(groups), key=f"{key}_form", index=None,
+    return groups
+
+
+def not_all_same(t: str) -> str:
+    return f"Not all the same {noun(t)}? Separate one"
+
+
+def split_controls(sess: Session, res, ent, key: str) -> None:
+    """Pick a written form, then where all its variants go: a new entry (any category) or an existing label."""
+    groups = form_groups(ent)
+    ask = "Which one is someone else?" if ent.type == "PERSON" else f"Which one is a different {noun(ent.type)}?"
+    form = st.selectbox(ask, list(groups), key=f"{key}_form", index=None,
                         placeholder="Choose…", format_func=lambda n: f"{', '.join(groups[n][0])}  (×{groups[n][1]})")
-    types = list(dict.fromkeys([ent.type, "PERSON", "ORGANIZATION"]
-                               + [t for t, sp in sess.policy.entities.items() if sp.get("action") == "redact"] + ["MANUAL"]))
+    types = [ent.type] + [t for t in categories(sess, res) if t != ent.type]
     others = sorted((e for e in res.entities if e.key != ent.key and e.is_redacted),
                     key=lambda e: (e.type != ent.type, e.label))
     dests = [f"new:{t}" for t in types] + [e.key for e in others]
     by = {e.key: e for e in others}
     st.selectbox("It is…", dests, key=f"{key}_dest",
-                 format_func=lambda d: (f"A new {KIND_NAMES.get(d[4:], type_name(d[4:])).lower()}")
-                 if d.startswith("new:") else f"Same as {by[d].label} ({examples(by[d], 2)})")
+                 format_func=lambda d: f"A new {noun(d[4:])}" if d.startswith("new:")
+                 else f"Part of {by[d].label} ({examples(by[d], 2)})")
     st.button("Separate", key=f"{key}_go", width="stretch", disabled=form is None,
               on_click=lambda: do_split(sess, ent, groups[st.session_state[f"{key}_form"]][0][0],
                                         st.session_state[f"{key}_dest"]))
 
 
-def replacement_picker(res, item, key: str, default: str) -> tuple[str, str]:
+def replacement_picker(res, item, key: str, default: str, title: str = "Replacement",
+                       suggest: str | None = None) -> tuple[str, str]:
     """Dropdown of existing replacements (with examples) plus "Add new". Returns (kind, value):
-    ("new", text) | ("existing", entity key) | ("text", flag replacement)."""
+    ("new", text) | ("existing", entity key) | ("text", flag replacement). ``suggest`` (an entity key) is
+    preselected: the label this probably belongs in."""
     is_flag = item is not None and not hasattr(item, "variants")
     if is_flag:
         pool = sorted({f.replacement_for(f.text) for f in res.flags if f.status in ("accepted", "edited")}
@@ -427,7 +500,8 @@ def replacement_picker(res, item, key: str, default: str) -> tuple[str, str]:
     pool = sorted((e for e in res.entities if e.is_redacted and e.key != own),
                   key=lambda e: (e.type != t, e.type, e.label))
     by = {e.key: e for e in pool}
-    choice = st.selectbox("Replacement", ["__new__"] + list(by), key=key,
+    keys = ["__new__"] + list(by)
+    choice = st.selectbox(title, keys, key=key, index=keys.index(suggest) if suggest in by else 0,
                           format_func=lambda k: "➕ Add new replacement" if k == "__new__"
                           else f"{by[k].label} — e.g. {examples(by[k])}")
     if choice == "__new__":
@@ -543,7 +617,8 @@ def home() -> None:
         pol = load_policy(policies[next(iter(policies))])
     with st.expander(f"Rules: {pol.name}"):
         st.selectbox("Rules", labels_, key="rules_pick", on_change=lambda: st.session_state.update(rules_touched=True),
-                     help="★ = saved in My rules (this browser). Save rules from ⚙ Settings once you've set them up.")
+                     help="★ = saved in My rules (this browser). Save rules from Settings in the sidebar once you've "
+                          "set them up.")
         pol = load_choice(st.session_state.rules_pick)
         st.caption(pol.raw.get("description", "") + (f" · {len(pol.known_parties)} name(s) always hidden"
                                                      if pol.known_parties else ""))
@@ -597,44 +672,79 @@ def forms_of(ent) -> list[tuple[str, str, int, list[int], tuple]]:
     return [(f, v, n, sorted(d), first) for f, v, n, d, first in out.values()]
 
 
-def entity_popover(sess: Session, res, e, focus) -> None:
+def toggle_entity(key: str) -> None:
+    st.session_state.sb_open = None if st.session_state.get("sb_open") == key else key
+
+
+def entity_row(sess: Session, res, e, focus) -> None:
+    """One name in the sidebar list. Clicking it opens its controls right below, inside the sidebar, so they
+    scroll with it (a floating popover ran off the bottom of the window)."""
     status = {"pending": " · needs a look", "setting": " · off", "manual": " · by you"}.get(e.status, "")
+    is_open = st.session_state.get("sb_open") == e.key
     mark = "● " if e.key == focus else ""
-    with st.popover(f"{mark}{e.label} · {e.canonical[:24]} ({len(e.mentions)}){status}", width="stretch"):
-        docs = sorted({m[0] for m in e.mentions})
-        st.caption(f"{type_name(e.type)} · {STATUS_WORDS.get(e.status, e.status)} · in "
-                   f"{', '.join(short(sess.names[d], 22) for d in docs)}")
-        if e.is_redacted and not e.nick_target:
-            r1, r2 = st.columns([2.2, 1], vertical_alignment="bottom")
-            new = r1.text_input("Label", e.label, key=f"lbl-{e.key}", help="Replaces the name in every file.")
-            if r2.button("Rename", key=f"rn-{e.key}", width="stretch") and new.strip() != e.label:
-                try:
-                    sess.rename(e.key, new, note=f"Rename {e.label} → “{new.strip()}”")
-                    st.session_state.focus = e.key
-                    st.session_state.focus_note = f"{e.canonical} is now “{new.strip()}”"
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-        st.markdown("<br>".join(f"<span class='form'>{html.escape(f)}</span> <span class='dim'>×{n}</span>"
-                                for f, _, n, _, _ in forms_of(e)), unsafe_allow_html=True)
-        if e.type in KIND_NAMES:
-            kinds = list(KIND_NAMES)
-            st.selectbox("This is a", kinds, index=kinds.index(e.type), format_func=KIND_NAMES.get,
-                         key=f"kind_{e.key}", on_change=lambda k=e.key, it=e: retype_from_widget(k, it))
-        if len(forms_of(e)) > 1:
-            st.markdown('<p class="ll-sub">Different people or things?</p>', unsafe_allow_html=True)
-            split_controls(sess, res, e, f"sb-{e.key}")
-        others = sorted((o for o in res.entities if o.key != e.key and o.is_redacted),
-                        key=lambda o: (o.type != e.type, o.label))
-        if others:
-            st.markdown('<p class="ll-sub">The same as another name?</p>', unsafe_allow_html=True)
-            names = {o.key: f"{o.label} ({examples(o, 2)})" for o in others}
-            tgt = st.selectbox("Same as", list(names), key=f"mv-{e.key}", format_func=names.get, index=None,
-                               placeholder="Choose who this is the same as…", label_visibility="collapsed")
-            st.button("Treat as the same", key=f"mb-{e.key}", on_click=merge_into, width="stretch",
-                      disabled=tgt is None, args=(sess, e, next((o for o in others if o.key == tgt), None)))
-        st.button("Don't hide this", key=f"del-{e.key}", on_click=delete_entity, args=(sess, e),
-                  width="stretch", help="Not a real name? It will appear as written in every file.")
+    st.button(f"{mark}{e.label} · {e.canonical[:24]} ({len(e.mentions)}){status}  {'▾' if is_open else '▸'}",
+              key=f"ent-{e.key}", width="stretch", type="primary" if is_open else "secondary",
+              on_click=toggle_entity, args=(e.key,))
+    if is_open:
+        with st.container(border=True, key=f"ented-{e.key}"):
+            entity_editor(sess, res, e)
+
+
+def move_to_category(sess: Session, e, new_type: str) -> None:
+    sess.retype(e.key, new_type, note=f"“{e.canonical}” is {a_noun(new_type)}")
+    st.session_state.focus = e.key
+    st.session_state.pop("_ent_focus_seen", None)  # the list jumps to its new category
+    st.session_state.focus_note = f"“{e.canonical}” is now {a_noun(new_type)}"
+
+
+def entity_editor(sess: Session, res, e) -> None:
+    """A name's label, how it's written, and one question: what should happen to it?"""
+    docs = sorted({m[0] for m in e.mentions})
+    st.caption(f"{type_name(e.type)} · {STATUS_WORDS.get(e.status, e.status)} · in "
+               f"{', '.join(short(sess.names[d], 22) for d in docs)}")
+    if e.is_redacted and not e.nick_target:  # stacked: the sidebar is too narrow for a field and a button side by side
+        new = st.text_input("Label", e.label, key=f"lbl-{e.key}-{e.label}", help="Replaces it in every file.")
+        if st.button("Rename", key=f"rn-{e.key}", width="stretch") and new.strip() not in ("", e.label):
+            try:
+                sess.rename(e.key, new, note=f"Rename {e.label} → “{new.strip()}”")
+                st.session_state.focus = e.key
+                st.session_state.focus_note = f"{e.canonical} is now “{new.strip()}”"
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+    st.markdown("<br>".join(f"<span class='form'>{html.escape(f)}</span> <span class='dim'>×{n}</span>"
+                            for f, _, n, _, _ in forms_of(e)), unsafe_allow_html=True)
+    others = sorted((o for o in res.entities if o.key != e.key and o.is_redacted),
+                    key=lambda o: (o.type != e.type, o.label))
+    actions = {"move": "Move to another category"}  # short: the sidebar is narrow
+    if others:
+        actions["join"] = "Belongs in another label"
+    if len(form_groups(e)) > 1:
+        actions["split"] = "Not all the same — split"
+    if e.is_redacted:
+        actions["show"] = "Don't hide it"
+    act = st.selectbox("What should happen to it?", list(actions), key=f"act-{e.key}", index=None,
+                       format_func=actions.get, placeholder="Choose…")
+    if act == "move":
+        cats = [t for t in categories(sess, res) if t != e.type]
+        tgt = st.selectbox("Move it to", cats, key=f"cat-{e.key}", format_func=cat_name, index=None,
+                           placeholder="Choose a category…")
+        st.button(f"Move to {cat_name(tgt)}" if tgt else "Move", key=f"catgo-{e.key}", width="stretch",
+                  disabled=tgt is None, on_click=move_to_category, args=(sess, e, tgt))
+        st.caption("It gets a new label from that category, the same in every file.")
+    elif act == "join":
+        names = {o.key: f"{o.label} ({examples(o, 2)})" for o in others}
+        tgt = st.selectbox("Which label?", list(names), key=f"mv-{e.key}", format_func=names.get, index=None,
+                           placeholder="Choose a label…")
+        st.button(f"Add to {res.entity(tgt).label}" if tgt else "Add to that label", key=f"mb-{e.key}",
+                  on_click=merge_into, width="stretch", disabled=tgt is None,
+                  args=(sess, e, next((o for o in others if o.key == tgt), None)))
+    elif act == "split":
+        split_controls(sess, res, e, f"sb-{e.key}")
+    elif act == "show":
+        st.caption("It will appear as written in every file — not hidden, not replaced. ↶ Undo brings it back.")
+        st.button(f"Leave “{short(e.canonical, 28)}” as written", key=f"del-{e.key}", on_click=delete_entity,
+                  args=(sess, e), width="stretch")
 
 
 def party_hits(res, name: str) -> tuple[int, int]:
@@ -645,7 +755,9 @@ def party_hits(res, name: str) -> tuple[int, int]:
 
 def known_parties_form(sess: Session, res, key: str, compact: bool = False) -> None:
     """Add a name, pick what it is, see how often it's found; remove with ×. Always hidden, in every spelling."""
-    kinds = {"ORGANIZATION": "Company", "PERSON": "Person", "MANUAL": "Other (codename, project…)"}
+    kinds = {"ORGANIZATION": "Company", "PERSON": "Person",
+             **{t: type_name(t) for t in categories(sess, res) if t.startswith("OTHER:")},  # ones you've made
+             "MANUAL": "Other (codename, project…)"}
     with st.form(f"{key}_form", border=False, clear_on_submit=True):
         c1, c2, c3 = st.columns([2.4, 1.4, .9] if not compact else [1, 1, 1], vertical_alignment="bottom")
         name = c1.text_input("Name", placeholder="e.g. Project Falcon, Acme Bank, Jane Doe", key=f"{key}_name")
@@ -680,7 +792,7 @@ def date_explainer(res, mode: str) -> str:
 
 
 def sidebar(sess: Session, res) -> None:
-    """Four collapsible sections: Settings · Known parties · Rules · Entities."""
+    """Four collapsible sections: Settings · Known parties · Rules · Names & labels."""
     focus = st.session_state.get("focus")
     s = sess.settings
     with st.sidebar:
@@ -690,7 +802,7 @@ def sidebar(sess: Session, res) -> None:
                     unsafe_allow_html=True)
 
         # ---- Settings
-        with st.expander("⚙ Settings"):
+        with st.expander("Settings"):
             st.session_state.setdefault("t_roles", bool(s.get("role_labels", False)))
             st.toggle("Label by role and context", key="t_roles",
                       help="Defendant, Buyer, 'Address of principal executive offices'… instead of Company A.")
@@ -763,6 +875,7 @@ def sidebar(sess: Session, res) -> None:
             if focus_type and st.session_state.get("_ent_focus_seen") != focus:
                 st.session_state.ent_type = focus_type          # jump to a just-split/merged/shown name once
                 st.session_state._ent_focus_seen = focus
+                st.session_state.sb_open = focus                # …with its controls open
             if st.session_state.get("ent_type") not in options:
                 st.session_state.ent_type = "__all__"
             eq = st.text_input("Find a name", key="ent_search", label_visibility="collapsed",
@@ -771,8 +884,9 @@ def sidebar(sess: Session, res) -> None:
                 found = alpha(e for e in res.entities if eq in e.label.lower() or eq in e.canonical.lower()
                               or any(eq in m[3].lower() for m in e.mentions))
                 st.caption(f"{len(found)} match{'es' if len(found) != 1 else ''}" if found else "No name matches.")
-                for e in found[:40]:
-                    entity_popover(sess, res, e, focus)
+                with st.container(key="entlist"):
+                    for e in found[:40]:
+                        entity_row(sess, res, e, focus)
             else:
                 pick = st.selectbox("Show", options, key="ent_type", label_visibility="collapsed",
                                     format_func=lambda t: f"Show all ({len(res.entities)})" if t == "__all__"
@@ -780,8 +894,9 @@ def sidebar(sess: Session, res) -> None:
                                     else f"{type_name(t)} ({len(by_type[t])})")
                 shown = (res.entities if pick == "__all__" else pending if pick == "__review__"
                          else by_type.get(pick, []))
-                for e in alpha(shown):
-                    entity_popover(sess, res, e, focus)
+                with st.container(key="entlist"):
+                    for e in alpha(shown):
+                        entity_row(sess, res, e, focus)
 
         st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
         if st.button("Start over", width="stretch", key="sb_start_over"):
@@ -884,13 +999,15 @@ def start_view(sess: Session, res) -> None:
 
 
 # --------------------------------------------------------------------------- review
-def bearing(done: int, total: int, title: str = "Review queue", unit: str = "reviewed", tight: bool = False) -> None:
+def bearing(done: int, total: int, title: str = "Review queue", unit: str = "reviewed", tight: bool = False,
+            note: str = "") -> None:
     frac = done / total if total else 1.0
     left = total - done
     st.markdown(
         f'<div class="fix{" tight" if tight else ""}"><div class="fix-row"><span>{title}</span>'
         f'<span class="now">{done} of {total} {unit}{f" · {left} left" if left else " ✓"}</span></div>'
-        f'<div class="track"><div class="fill" style="width:{frac * 100:.1f}%"></div></div></div>',
+        f'<div class="track"><div class="fill" style="width:{frac * 100:.1f}%"></div></div>'
+        + (f'<div class="fix-note">{html.escape(note)}</div>' if note else "") + '</div>',
         unsafe_allow_html=True)
 
 
@@ -1070,10 +1187,10 @@ def review(sess: Session, res) -> None:
             if c3.button("Change label" if not is_flag else "Change wording", width="stretch", key=f"chg_{key}"):
                 st.session_state.editing = True
                 st.rerun()
-        if not is_flag and item.type in KIND_NAMES:
+        if not is_flag and not getattr(item, "nick_target", ""):
             t1, _ = st.columns([1.4, 3])
-            kinds = list(KIND_NAMES)
-            t1.selectbox("This is a", kinds, index=kinds.index(item.type), format_func=KIND_NAMES.get,
+            kinds = categories(sess, res, keep=item.type)
+            t1.selectbox("This is a", kinds, index=kinds.index(item.type), format_func=cat_name,
                          key=f"kind_{key}", on_change=lambda k=key, it=item: retype_from_widget(k, it))
     else:
         if sentence:
@@ -1105,7 +1222,7 @@ def review(sess: Session, res) -> None:
                 if apply_replacement(sess, res, key, item, kind, value):
                     st.rerun()
             if len(forms) > 1:
-                with st.expander("These are different people or things → split one off"):
+                with st.expander(not_all_same(item.type)):
                     split_controls(sess, res, item, f"rv-{key}")
         if b2.button("Cancel", width="stretch"):
             st.session_state.editing = False
@@ -1125,8 +1242,8 @@ def retype_from_widget(key: str, item) -> None:
     new = st.session_state.get(f"kind_{key}")
     if new and new != item.type:
         sess = st.session_state.session
-        sess.retype(item.key, new, note=f"“{item.canonical}” is a {KIND_NAMES[new].lower()}")
-        st.session_state.focus_note = f"“{item.canonical}” is now treated as a {KIND_NAMES[new].lower()}"
+        sess.retype(item.key, new, note=f"“{item.canonical}” is {a_noun(new)}")
+        st.session_state.focus_note = f"“{item.canonical}” is now treated as {a_noun(new)}"
 
 
 # --------------------------------------------------------------------------- documents
@@ -1456,6 +1573,24 @@ def is_current(sess: Session, res, doc: int) -> bool:
     return doc in sess.approved and sess.approved[doc]["output"] == res.outputs[doc]
 
 
+_WORD = re.compile(r"[A-Za-z][A-Za-z'’-]{3,}")
+_NOT_A_NAME = GENERIC_ORG_WORDS | {"company", "corporation", "limited", "inc", "llc", "the", "and", "with", "from"}
+
+
+def likely_label(res, phrase: str):
+    """The existing label a phrase probably belongs in: one that shares a name word with it ("D. Okafor" →
+    the label for Daniel K. Okafor). None if nothing matches."""
+    words = {w.casefold() for w in _WORD.findall(phrase) if w[:1].isupper()} - _NOT_A_NAME
+    best = (0, None)
+    for e in res.entities:
+        if not e.is_redacted or e.nick_target or not (e.type in ("PERSON", "ORGANIZATION") or e.type.startswith("OTHER:")):
+            continue
+        n = len(words & {w.casefold() for m in e.mentions for w in _WORD.findall(m[3])})
+        if n > best[0]:
+            best = (n, e)
+    return best[1]
+
+
 @st.dialog("Redact text")
 def redact_dialog(sess: Session, res, payload: dict) -> None:
     phrase = " ".join(payload["text"].split())
@@ -1495,28 +1630,42 @@ def redact_dialog(sess: Session, res, payload: dict) -> None:
                + " — all will be redacted.")
     kinds = {"PERSON": "Person", "ORGANIZATION": "Organization", "ACCOUNT_NUMBER": "Account number",
              "CASE_NUMBER": "Case / docket number", "STREET_ADDRESS": "Address", "DATE": "Date",
-             "MANUAL": "Just redact it (Redacted 1, 2…)", "OTHER": "Other…"}
+             **{t: type_name(t) for t in categories(sess, res) if t.startswith("OTHER:")},  # ones you've made
+             "MANUAL": "Just redact it (Redacted 1, 2…)", "OTHER": "Other — a new category…"}
     kind = st.selectbox("What is it?", list(kinds), format_func=kinds.get, key="rd_kind")
-    desc = ""
+    desc, same = "", None
     if kind == "OTHER":
-        desc = st.text_input("Describe it", placeholder="e.g. Project codename, Fund name, Drug candidate",
-                             key="rd_desc").strip()
-    rk, rv = replacement_picker(res, None, "rd_pick", "")
+        desc = " ".join(st.text_input("Name the new category", placeholder="e.g. Age, Project codename, Fund name",
+                                      key="rd_desc").split())
+        same = existing_category(sess, res, desc)
+        if same:  # the same field again (another person's age): file it with the first one, not as a new category
+            first = next((e for e in res.entities if e.type == same and e.is_redacted), None)
+            st.info(f"“{desc}” is already a category"
+                    + (f" — {first.label} is “{short(' '.join(first.canonical.split()), 30)}”" if first else "")
+                    + f". This will be added to it as the next {cat_name(same)}, not as a second category. "
+                    + "Next time, pick it from the list above.")
+    guess = likely_label(res, phrase)
+    if guess is not None:
+        st.caption(f"Looks like part of **{guess.label}** ({examples(guess, 2)}), so that label is selected. "
+                   "Choose ➕ Add new replacement if it's something else.")
+    rk, rv = replacement_picker(res, None, "rd_pick", "", title="Label",
+                                suggest=guess.key if guess is not None else None)
     c1, c2 = st.columns(2)
     ready = not (kind == "OTHER" and not desc and rk == "new")
     if c1.button("Redact everywhere", type="primary", width="stretch", disabled=not ready):
         if rk == "existing":
             sess.redact_as(rv, phrase, note=f"Hide “{phrase[:40]}”")
-        elif kind == "OTHER":
+        elif kind == "OTHER" and not same:
             sess.redact(phrase, f"OTHER:{desc}", rv.strip(), f"{desc} {{1}}")
         else:
-            sess.redact(phrase, kind, rv.strip())
+            t = same or kind
+            sess.redact(phrase, t, rv.strip(), f"{type_name(t)} {{1}}" if t.startswith("OTHER:") else "")
         st.session_state.focus_note = f"Redacted “{phrase}” in {total} place{'s' if total != 1 else ''}"
         st.rerun()
     if c2.button("Cancel", width="stretch"):
         st.rerun()
     if not ready:
-        st.caption("Describe it to create the label.")
+        st.caption("Name the category to create the label.")
 
 
 @st.dialog("Change label")
@@ -1533,9 +1682,9 @@ def edit_dialog(sess: Session, res, ref: str) -> None:
         f'{html.escape(", ".join(short(res.names[d], 22) for d in docs))}</span></div>' for f, _, n, docs, _ in forms),
         unsafe_allow_html=True)
     st.caption(f"Now shown as “{current}”. Changes apply in every file.")
-    if not is_flag and item.type in KIND_NAMES:
-        kinds = list(KIND_NAMES)
-        st.selectbox("This is a", kinds, index=kinds.index(item.type), format_func=KIND_NAMES.get,
+    if not is_flag and not item.nick_target:
+        kinds = categories(sess, res, keep=item.type)
+        st.selectbox("This is a", kinds, index=kinds.index(item.type), format_func=cat_name,
                      key=f"kind_dlg_{item.key}",
                      on_change=lambda: (sess.retype(item.key, st.session_state[f"kind_dlg_{item.key}"],
                                                     note=f"Change type of “{item.canonical}”")))
@@ -1553,7 +1702,7 @@ def edit_dialog(sess: Session, res, ref: str) -> None:
         delete_entity(sess, item)
         st.rerun()
     if not is_flag and len(forms) > 1:
-        with st.expander("Different people or things? Separate one"):
+        with st.expander(not_all_same(item.type)):
             split_controls(sess, res, item, f"ed-split-{ref}")
 
 
@@ -1715,10 +1864,9 @@ def documents(sess: Session, res) -> None:
         a1.button("✓ Approve again" if stale else ("✓ Approve and open next" if approved < n - 1 else "✓ Approve"),
                   type="primary", width="stretch", key=f"approve_{doc}", on_click=approve_and_advance)
     with a2:  # the count again where you approve, so you don't scroll back up to see what's left
-        bearing(approved, n, "Files", "approved", tight=True)
-        if open_here:
-            st.markdown(f'<span class="dim">{len(open_here)} item{"s" if len(open_here) != 1 else ""} in this file '
-                        'still need a look</span>', unsafe_allow_html=True)
+        bearing(approved, n, "Files", "approved", tight=True,
+                note=f'{len(open_here)} item{"s" if len(open_here) != 1 else ""} in this file still '
+                     f'need{"s" if len(open_here) == 1 else ""} a look' if open_here else "")
     if approved == n:
         st.success("Every file is approved.")
         st.button("Go to ④ Download →", type="primary", key="to_final",
@@ -1806,6 +1954,33 @@ def audit_trail(sess: Session, res) -> None:
     st.download_button("Download the label key (.csv)", internal_log_csv(res), "INTERNAL_label_key.csv", "text/csv")
 
 
+# --------------------------------------------------------------------------- step navigation
+STEP_NAMES = {"Start": "① Files", "Review": "② Check", "Documents": "③ Read & approve", "Final": "④ Download"}
+
+
+def go_to(view: str) -> None:
+    st.session_state.view = view
+    st.session_state.scroll_top = True  # the new step opens at its top, not where the old one was scrolled to
+
+
+def step_nav(view: str) -> None:
+    """← Back / Next → at the bottom of every step, so a long page never sends you back up to the step bar."""
+    i = VIEWS.index(view)
+    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+    with st.container(key="stepnav"):
+        c1, c2 = st.columns(2)
+        if i > 0:
+            c1.button(f"← Back: {STEP_NAMES[VIEWS[i - 1]]}", key="nav_back", width="stretch",
+                      on_click=go_to, args=(VIEWS[i - 1],))
+        if i + 1 < len(VIEWS):
+            c2.button(f"Next: {STEP_NAMES[VIEWS[i + 1]]} →", key="nav_next", width="stretch",
+                      on_click=go_to, args=(VIEWS[i + 1],))
+    if st.session_state.pop("scroll_top", False):
+        import time
+        st.html(f"<script>/* {time.time()} */ document.querySelector('[data-testid=\"stMain\"]')"
+                "?.scrollTo({top: 0});</script>", unsafe_allow_javascript=True)
+
+
 # --------------------------------------------------------------------------- main
 inject_css()
 sess: Session | None = st.session_state.get("session")
@@ -1847,3 +2022,4 @@ else:
             unsafe_allow_javascript=True)
     st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
     {"Start": start_view, "Review": review, "Documents": documents, "Final": final_view}[view](sess, res)
+    step_nav(view)
