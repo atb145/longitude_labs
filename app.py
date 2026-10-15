@@ -43,7 +43,8 @@ from engine.export import FORMATS, buyer_zip, internal_log_csv, render_file
 from engine.extract import SUPPORTED
 from engine.registry import GENERIC_ORG_WORDS, deleted_text, norm_form, split_key, type_title
 
-# Bundled demo: two public SEC filings on Microsoft's acquisition of Activision Blizzard. ANONYMIZER_SAMPLES points
+# Bundled demo: three public SEC filings on Microsoft's acquisition of Activision Blizzard (the proxy cut to its first
+# quarter, so the demo starts in seconds). ANONYMIZER_SAMPLES points
 # "Try the sample case" at another folder (the tests use a small fictional case).
 SAMPLES = Path(os.environ.get("ANONYMIZER_SAMPLES") or Path(__file__).parent / "samples")
 TYPE_NAMES = {
@@ -742,8 +743,9 @@ def home() -> None:
                       rights=True)  # public SEC filings
         st.rerun()
     if not (uploads and rights):
-        st.caption("Add files and tick the box to continue — or try the sample: two public SEC filings on Microsoft's "
-                   "acquisition of Activision Blizzard, the 8-K announcing the deal (2022) and the 8-K closing it (2023).")
+        st.caption("Add files and tick the box to continue — or try the sample: three public SEC filings on Microsoft's "
+                   "acquisition of Activision Blizzard — the 8-K announcing the deal, the first 57 pages of the merger "
+                   "proxy, and the 8-K closing it.")
     st.caption("Nothing is saved — refreshing or closing this tab clears your work. Download first.")
 
 
