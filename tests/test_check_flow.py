@@ -126,3 +126,9 @@ def test_library_offer_settings_ticked_edits_under_entities_with_select_all():
     next(b for b in at.button if b.label == "Send to Library").click().run()
     saved = at.session_state.library[0]
     assert "labels" not in saved["ops"] and "aliases" not in saved["ops"] and saved["settings"]
+
+
+def test_documents_edit_button_says_edit():
+    # The document panes are a custom component AppTest can't read, so check the label where it's built.
+    src = pathlib.Path(APP).read_text()
+    assert '"✓ Done" if edit else "✎ Edit"' in src and "✎ Select to hide" not in src
