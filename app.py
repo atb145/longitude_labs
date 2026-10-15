@@ -2024,6 +2024,128 @@ def audit_trail(sess: Session, res) -> None:
     st.download_button("Download the label key (.csv)", internal_log_csv(res), "INTERNAL_label_key.csv", "text/csv")
 
 
+# --------------------------------------------------------------------------- library (presentation prototype)
+# A saved setup: the settings and rule switches, plus the labels and corrections made by hand. Entries live in
+# this browser tab's session only (no database); "Use again" applies one to the next set that's started.
+LIBRARY_OPS = ("labels", "decisions", "retype", "manual", "merges", "splits", "deleted", "aliases", "parties")
+LIBRARY_EXAMPLES = [  # invented; keys match the sample case, so "Use again" + "Try with sample case" shows it
+    {"name": "Harborview enforcement matter", "date": "Sep 30, 2026",
+     "settings": {"disabled": ["MONEY", "SHARE_COUNT"]},
+     "ops": {"labels": {"ORGANIZATION:bellcrest therapeutics": "Issuer",
+                        "ORGANIZATION:meridian clearing": "Clearing firm",
+                        "ORGANIZATION:jpmorgan chase": "Custodian bank"},
+             "decisions": {k: {"action": "accept", "value": ""} for k in (
+                 "E|ORGANIZATION:bellcrest therapeutics", "E|ORGANIZATION:meridian clearing",
+                 "E|ORGANIZATION:jpmorgan chase", "E|ORGANIZATION:whitcombe")}}},
+    {"name": "Q3 broker-dealer exam — Pinecrest", "date": "Aug 12, 2026",
+     "settings": {"disabled": ["URL", "flag.group_inference"], "date_mode": "relative"},
+     "ops": {"labels": {"PERSON:daniel okafor": "Former CFO", "PERSON:priya raman": "Compliance officer"},
+             "parties": [{"name": "Pinecrest Securities", "type": "ORGANIZATION"}]}},
+]
+
+
+def library_entry(name: str, when: str, policy, settings: dict, ops: dict) -> dict:
+    import copy
+    disabled = settings.get("disabled") or []
+    return {"name": name, "date": when, "policy": policy.name, "settings": copy.deepcopy(settings),
+            "ops": {k: copy.deepcopy(ops[k]) for k in LIBRARY_OPS if ops.get(k)},
+            "toggles_on": sum(bid not in disabled for _, bid, _, _ in policy.buckets())}
+
+
+def library_entries() -> list[dict]:
+    if "library" not in st.session_state:
+        finance = load_policy(available_policies()["Finance"])
+        st.session_state.library = [library_entry(x["name"], x["date"], finance, x["settings"], x["ops"])
+                                    for x in LIBRARY_EXAMPLES]
+    return st.session_state.library
+
+
+def library_summary(entry: dict) -> str:
+    ops = entry["ops"]
+    n_labels = len(ops.get("labels", {}))
+    fixes = sum(len(ops.get(k, ())) for k in LIBRARY_OPS if k not in ("labels", "parties"))
+    return (f'{entry["toggles_on"]} toggles on · {n_labels} custom label{"s" if n_labels != 1 else ""}'
+            + (f' · {fixes} correction{"s" if fixes != 1 else ""}' if fixes else ""))
+
+
+def send_to_library(sess: Session) -> None:
+    from datetime import date
+    name = " ".join(st.session_state.get("lib_name", "").split()) or f"{sess.policy.name} set"
+    d = date.today()
+    library_entries().insert(0, library_entry(name, f"{d:%b} {d.day}, {d.year}", sess.policy, sess.settings,
+                                              sess.ops))
+    st.session_state.focus_note = f"Saved to Library: “{name}”"
+
+
+def send_to_library_box(sess: Session) -> None:
+    """End of ② Check: save this setup to the Library."""
+    from datetime import date
+    st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
+    label("Library")
+    st.caption("Save this setup — which rules are on, plus your labels and corrections — to reuse on the next set.")
+    c1, c2, _ = st.columns([2, 1.3, .7], vertical_alignment="bottom")
+    d = date.today()
+    c1.text_input("Name", f"{sess.policy.name} set · {d:%b} {d.day}", key="lib_name",
+                  label_visibility="collapsed")
+    c2.button("Send to Library", type="primary", width="stretch", key="lib_send", on_click=send_to_library,
+              args=(sess,))
+
+
+def use_library_entry(i: int, start_over: bool = False) -> None:
+    """Arm an entry for the next set (after closing the open one, if asked) and go to the upload page."""
+    if start_over:
+        reset()
+    st.session_state.library_use = library_entries()[i]
+    st.session_state.page = "Anonymize"
+
+
+def apply_library_entry(sess: Session, entry: dict) -> None:
+    import copy
+    sess.settings.update(copy.deepcopy(entry["settings"]))
+    sess.ops.update(copy.deepcopy(entry["ops"]))
+    for k in [k for k in st.session_state if k.startswith(("b_", "t_"))]:
+        st.session_state.pop(k, None)  # the sidebar switches pick the saved values up again
+    st.session_state.focus_note = f"Using “{entry['name']}” from the Library — toggles and corrections applied"
+
+
+@st.dialog("Use this setup for a new set?")
+def confirm_use_again(i: int) -> None:
+    st.write(f"“{library_entries()[i]['name']}” will be used for your next files. This closes the current set — "
+             "download what you need first.")
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, start a new set", type="primary", width="stretch", on_click=use_library_entry, args=(i, True)):
+        st.rerun()
+    if c2.button("Cancel", width="stretch"):
+        st.rerun()
+
+
+def library_view(sess: Session | None) -> None:
+    st.html("<style>.lib-name { font-family:var(--serif); font-size:1.2rem; line-height:1.3; margin:.1rem 0 .3rem; }"
+            ".lib-meta { font-size:.85rem; color:var(--dim); } .lib-sum { font-size:.95rem; margin:.7rem 0 .2rem; }"
+            "</style>")
+    st.markdown('<h2>Library</h2>', unsafe_allow_html=True)
+    st.caption("Saved setups. Use one again and your next set starts with its toggles, labels and corrections.")
+    entries = library_entries()
+    cols = st.columns(3)
+    for i, entry in enumerate(entries):
+        with cols[i % 3].container(border=True):
+            st.markdown(f'<div class="lib-name">{html.escape(entry["name"])}</div>'
+                        f'<div class="lib-meta">{html.escape(entry["date"])} · {html.escape(entry["policy"])} rules</div>'
+                        f'<div class="lib-sum">{library_summary(entry)}</div>', unsafe_allow_html=True)
+            if sess is None:
+                st.button("Use again", key=f"lib_use_{i}", width="stretch", on_click=use_library_entry, args=(i,))
+            elif st.button("Use again", key=f"lib_use_{i}", width="stretch"):
+                confirm_use_again(i)
+    st.caption("Prototype: the Library is kept for this browser tab only — refreshing resets it.")
+
+
+def library_banner() -> None:
+    entry = st.session_state.get("library_use")
+    if entry:
+        st.info(f"Using **{entry['name']}** from the Library ({library_summary(entry)}). It's applied when you "
+                "anonymize your files or try the sample case.")
+
+
 # --------------------------------------------------------------------------- step navigation
 STEP_NAMES = {"Start": "① Files", "Review": "② Check", "Documents": "③ Read & approve", "Final": "④ Download"}
 
@@ -2062,7 +2184,13 @@ if sess is not None and (type(sess) is not Session or getattr(sess, "VERSION", 0
     st.toast("Updated to the latest rules — your decisions were kept.")
 header()
 st.session_state.my_rules = my_rules()  # mounted every run, so a save/delete from anywhere is applied
-if sess is None:
+if sess is not None and st.session_state.get("library_use"):  # the first run of a set started after "Use again"
+    apply_library_entry(sess, st.session_state.pop("library_use"))
+st.tabs(["Anonymize", "Library"], key="page", on_change="rerun")  # the tab bar; each page renders below it
+if st.session_state.get("page") == "Library":
+    library_view(sess)
+elif sess is None:
+    library_banner()
     home()
 else:
     res = sess.run()
@@ -2092,4 +2220,6 @@ else:
             unsafe_allow_javascript=True)
     st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
     {"Start": start_view, "Review": review, "Documents": documents, "Final": final_view}[view](sess, res)
+    if view == "Review":
+        send_to_library_box(sess)
     step_nav(view)
