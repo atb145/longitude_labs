@@ -44,13 +44,13 @@ from engine.extract import SUPPORTED
 from engine.registry import GENERIC_ORG_WORDS, deleted_text, norm_form, split_key, type_title
 
 # Bundled demo: two public SEC filings on Microsoft's acquisition of Activision Blizzard. ANONYMIZER_SAMPLES points
-# "Try with sample case" at another folder (the tests use a small fictional case).
+# "Try the sample case" at another folder (the tests use a small fictional case).
 SAMPLES = Path(os.environ.get("ANONYMIZER_SAMPLES") or Path(__file__).parent / "samples")
 TYPE_NAMES = {
-    "PERSON": "Person", "ORGANIZATION": "Organization", "ACCOUNT_NUMBER": "Account number",
+    "PERSON": "Person", "ORGANIZATION": "Company", "ACCOUNT_NUMBER": "Account number",
     "CRD_NUMBER": "CRD number", "CUSIP": "CUSIP", "TICKER": "Ticker", "CASE_NUMBER": "Case / docket number",
-    "EMAIL_ADDRESS": "Email", "PHONE_NUMBER": "Phone", "US_SSN": "SSN", "STREET_ADDRESS": "Street address",
-    "DATE": "Date", "FLAG": "Flag", "MANUAL": "Manual redaction", "MONEY": "Amount", "SHARE_COUNT": "Share count",
+    "EMAIL_ADDRESS": "Email", "PHONE_NUMBER": "Phone", "US_SSN": "SSN", "STREET_ADDRESS": "Address",
+    "DATE": "Date", "FLAG": "Flag", "MANUAL": "Hidden by hand", "MONEY": "Amount", "SHARE_COUNT": "Share count",
     "URL": "Website", "TAX_ID": "Tax ID", "SHARE_PRICE": "Share price", "JOB_TITLE": "Job title",
     "POSTAL_CODE": "ZIP code",
 }
@@ -349,7 +349,7 @@ def start_session(files: list[tuple[str, bytes]], policy, rights: bool = False) 
     sess.rights_confirmed = rights
     st.session_state.session = sess
     bar.empty()
-    st.session_state.view = "Review"
+    st.session_state.view = "Start"  # open on ① Files: what's in the set first
     st.session_state.editing = False
 
 
@@ -430,8 +430,8 @@ def categories(sess: Session, res, keep: str = "") -> list[str]:
                                      + list((ops.get("retype") or {}).values()))
             if t.startswith("OTHER:")]
     built_in = ["PERSON", "ORGANIZATION"] + [t for t, sp in sess.policy.entities.items() if sp.get("action") == "redact"]
-    out = list(dict.fromkeys(built_in + sorted(made, key=str.lower) + ["MANUAL"]))
-    return out + ([keep] if keep and keep not in out else [])
+    out = sorted(dict.fromkeys(built_in + made + ([keep] if keep and keep != "MANUAL" else [])), key=lambda t: cat_name(t).lower())
+    return out + ["MANUAL"]  # A–Z, with plain "Other" last
 
 
 def _cat_word(text: str) -> str:
@@ -459,7 +459,7 @@ def examples(e, k: int = 3) -> str:
 
 
 def delete_entity(sess: Session, ent) -> None:
-    """'Don't hide this': a false detection; its text appears as written in every file (undoable)."""
+    """'Don't hide it': a false detection; its text appears as written in every file (undoable)."""
     if ent.rule == "manual":
         sess.unredact(ent.key, note=f"Show “{ent.canonical}” again")
     else:
@@ -562,7 +562,7 @@ def apply_replacement(sess: Session, res, item_key: str, item, kind: str, value:
         except ValueError as exc:
             st.error(str(exc))
             return False
-        st.session_state.focus_note = f"{item.canonical} is now “{value.strip()}” in every document"
+        st.session_state.focus_note = f"{item.canonical} is now “{value.strip()}” in every file"
         if item.status == "pending":
             item_after = sess.run().item(item_key)
             if item_after is not None and item_after.status == "pending":
@@ -691,7 +691,7 @@ def home() -> None:
                      help="★ = saved in My rules (this browser). Save rules from Settings in the sidebar once you've "
                           "set them up.")
         pol = load_choice(st.session_state.rules_pick)
-        st.caption(pol.raw.get("description", "") + (f" · {len(pol.known_parties)} name(s) always hidden"
+        st.caption(pol.raw.get("description", "") + (f" · {len(pol.known_parties)} name{'s' if len(pol.known_parties) != 1 else ''} always hidden"
                                                      if pol.known_parties else ""))
         if library:
             st.markdown('<p class="ll-sub">My rules (this browser)</p>', unsafe_allow_html=True)
@@ -715,14 +715,14 @@ def home() -> None:
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
-    if c2.button("Try with sample case", width="stretch"):
+    if c2.button("Try the sample case", width="stretch"):
         start_session([(p.name, p.read_bytes()) for p in sorted(SAMPLES.glob("*")) if p.suffix in SUPPORTED], pol,
                       rights=True)  # public SEC filings
         st.rerun()
     if not (uploads and rights):
         st.caption("Add files and tick the box to continue — or try the sample: two public SEC filings on Microsoft's "
                    "acquisition of Activision Blizzard, the 8-K announcing the deal (2022) and the 8-K closing it (2023).")
-    st.caption("Nothing is saved. Refreshing or closing this tab clears your work — download first.")
+    st.caption("Nothing is saved — refreshing or closing this tab clears your work. Download first.")
 
 
 # --------------------------------------------------------------------------- sidebar
@@ -786,7 +786,7 @@ def entity_editor(sess: Session, res, e) -> None:
     per_doc = Counter(m[0] for m in e.mentions)
     if len(per_doc) > 1:
         doc = st.selectbox("Found in", [None] + sorted(per_doc), key=f"in-{e.key}",
-                           format_func=lambda d: f"All {len(per_doc)} documents · ×{len(e.mentions)}" if d is None
+                           format_func=lambda d: f"All {len(per_doc)} files · ×{len(e.mentions)}" if d is None
                            else f"{short(sess.names[d], 30)} · ×{per_doc[d]}")
     else:
         doc = None
@@ -900,14 +900,15 @@ def sidebar(sess: Session, res) -> None:
             st.session_state.setdefault("t_dates", s.get("date_mode", "month_year"))
             st.selectbox("Dates", list(date_modes), key="t_dates", format_func=date_modes.get)
             st.caption(date_explainer(res, st.session_state.t_dates))
-            pub_modes = {"review": "Ask if it's a party", "keep": "Always keep", "redact": "Always redact"}
+            pub_modes = {"review": "Ask if it's a party", "keep": "Always keep", "redact": "Always hide"}
             st.session_state.setdefault("t_pub", s.get("public_companies", "review"))
             st.selectbox("Public companies", list(pub_modes), key="t_pub", format_func=pub_modes.get)
             st.session_state.setdefault("t_addr", s.get("generalize_addresses", True))
-            st.toggle("Addresses → city, state", key="t_addr", help="When the document gives no caption.")
+            st.toggle("Addresses → city, state", key="t_addr",
+                      help="Used when the file doesn't say what the address is (e.g. “Principal executive offices”).")
             with st.popover("Save these rules", width="stretch"):
                 save_rules_panel(sess)
-            with st.popover("Change rules (policy pack)", width="stretch"):
+            with st.popover("Use other rules", width="stretch"):
                 policies = available_policies()
                 library = st.session_state.get("my_rules") or {}
                 packs = [f"★ {nm}" for nm in sorted(library)] + list(policies)
@@ -969,7 +970,7 @@ def sidebar(sess: Session, res) -> None:
             if eq:
                 found = alpha(e for e in res.entities if eq in e.label.lower() or eq in e.canonical.lower()
                               or any(eq in m[3].lower() for m in e.mentions))
-                st.caption(f"{len(found)} match{'es' if len(found) != 1 else ''}" if found else "No name matches.")
+                st.caption(f"{len(found)} match{'es' if len(found) != 1 else ''}" if found else "No matches.")
                 with st.container(key="entlist"):
                     for e in found[:40]:
                         entity_row(sess, res, e, focus)
@@ -992,7 +993,7 @@ def sidebar(sess: Session, res) -> None:
 # --------------------------------------------------------------------------- adding documents / start
 def add_documents_form(sess: Session, key: str) -> None:
     """Upload more files into the current set (same registry, so pseudonyms stay consistent)."""
-    ups = st.file_uploader("Add documents", type=[x.strip(".") for x in SUPPORTED], accept_multiple_files=True,
+    ups = st.file_uploader("Add files", type=[x.strip(".") for x in SUPPORTED], accept_multiple_files=True,
                            key=f"{key}_files", label_visibility="collapsed")
     ok = st.checkbox("I have the right to share these files too.", key=f"{key}_rights",
                      help="Anonymizing doesn't cure privilege, NDAs or patient confidentiality.")
@@ -1007,16 +1008,16 @@ def add_documents_form(sess: Session, key: str) -> None:
             return
         progress("Matching names across files…", 0.98)
         new_items = len(sess.run().queue) - before
-        st.session_state.focus_note = (f"Added {len(added)} document{'s' if len(added) != 1 else ''}"
+        st.session_state.focus_note = (f"Added {len(added)} file{'s' if len(added) != 1 else ''}"
                                        + (f" — {new_items} new item{'s' if new_items != 1 else ''} to review"
                                           if new_items > 0 else ""))
         st.session_state.pop(f"{key}_files", None)
         st.rerun()
 
 
-@st.dialog("Add documents", width="large")
+@st.dialog("Add files", width="large")
 def add_documents_dialog(sess: Session) -> None:
-    st.caption("Existing pseudonyms and decisions carry over. New findings join the review queue.")
+    st.caption("Your labels and decisions carry over. Anything new found in these files joins ② Check.")
     add_documents_form(sess, "dlg_add")
 
 
@@ -1071,17 +1072,17 @@ def example_pair(res, e) -> tuple[str, str]:
 
 
 def start_view(sess: Session, res) -> None:
-    """Step 1 while a set is open: the files, add more, labels. (Next is the button at the bottom.)"""
+    """Step 1 while a set is open: the files in it, add more, the labels. (Next is the button at the bottom.)"""
     st.markdown('<h2>Your files</h2>', unsafe_allow_html=True)
-    label("Add files to this set")
-    add_documents_form(sess, "start_add")
-    st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
     rows = [{"file": name, "status": ("✓ approved" if is_current(sess, res, i) else
                                       "changed since approval" if i in sess.approved else "in progress"),
              "hidden": len([g for g in res.segments[i] if g.kind != "tidy"]),
              "notes": "; ".join(w["message"] for w in (sess.warnings[i] if i < len(getattr(sess, 'warnings', []) or []) else []))}
             for i, name in enumerate(res.names)]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
+    label("Add files to this set")
+    add_documents_form(sess, "start_add")
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     label("Labels")
     st.caption("Every label in this set, with one place it's used: as written, and as it reads now. To rename a "
@@ -1100,7 +1101,7 @@ def start_view(sess: Session, res) -> None:
 
 
 # --------------------------------------------------------------------------- review
-def bearing(done: int, total: int, title: str = "Review queue", unit: str = "reviewed", tight: bool = False,
+def bearing(done: int, total: int, title: str = "Items", unit: str = "checked", tight: bool = False,
             note: str = "") -> None:
     frac = done / total if total else 1.0
     left = total - done
@@ -1135,12 +1136,12 @@ def set_picks(keys: list[str], value: bool) -> None:
 
 def bulk_decide(keys: list[str], action: str) -> None:
     sess = st.session_state.session
-    word = "Approved" if action == "accept" else "Kept as written:"
     sess.decide_many(keys, action, f"{'Approve' if action == 'accept' else 'Keep'} {len(keys)} items")
     for k in keys:
         st.session_state.pop(f"pick_{k}", None)
-    st.session_state.focus_note = (f"{word} {len(keys)} item{'s' if len(keys) != 1 else ''} — ↶ Undo reverses "
-                                   + ("all of them" if len(keys) != 1 else "it"))
+    n = f"{len(keys)} item{'s' if len(keys) != 1 else ''}"
+    st.session_state.focus_note = ((f"Approved {n}" if action == "accept" else f"Kept {n} as written")
+                                   + " — ↶ Undo reverses " + ("all of them" if len(keys) != 1 else "it"))
 
 
 def review_list(sess: Session, res, pending: list[str]) -> None:
@@ -1507,9 +1508,9 @@ export default function (component) {
     });
   });
 
-  // Select text -> floating "Redact" button (edit mode only).
+  // Select text -> floating "Hide" button (edit mode only).
   const fab = document.createElement('button');
-  fab.className = 'redact-fab'; fab.textContent = '✎ Redact'; fab.style.display = 'none';
+  fab.className = 'redact-fab'; fab.textContent = '✎ Hide'; fab.style.display = 'none';
   root.appendChild(fab);
   root.onmouseup = () => setTimeout(() => {
     if (!data.edit) return;
@@ -1678,7 +1679,7 @@ def show_leak(lk: dict) -> None:
 def fix_leak(sess: Session, lk: dict) -> None:
     """Add the leaked wording to its entity, so it gets the same pseudonym everywhere."""
     sess.redact_as(lk["key"], lk["text"], note=f"Hide “{lk['text']}” as {lk['label']}")
-    st.session_state.focus_note = f"“{lk['text']}” is now redacted as {lk['label']} everywhere"
+    st.session_state.focus_note = f"“{lk['text']}” is now hidden as {lk['label']} everywhere"
 
 
 def release_box(sess: Session, res) -> list[str]:
@@ -1709,7 +1710,7 @@ def release_box(sess: Session, res) -> list[str]:
                             f'should be {html.escape(lk["label"])}</span>', unsafe_allow_html=True)
                 c2.button("Show", key=f"leak_show_{st.session_state.get('view', '')}_{i}", width="stretch",
                           on_click=show_leak, args=(lk,))
-                c3.button("Redact it", key=f"leak_fix_{st.session_state.get('view', '')}_{i}", width="stretch",
+                c3.button("Hide it", key=f"leak_fix_{st.session_state.get('view', '')}_{i}", width="stretch",
                           type="primary", on_click=fix_leak, args=(sess, lk))
     return blockers
 
@@ -1740,7 +1741,7 @@ def likely_label(res, phrase: str):
     return best[1]
 
 
-@st.dialog("Redact text")
+@st.dialog("Hide text")
 def redact_dialog(sess: Session, res, payload: dict) -> None:
     phrase = " ".join(payload["text"].split())
     body = r"\s+".join(map(re.escape, phrase.split()))
@@ -1762,7 +1763,7 @@ def redact_dialog(sess: Session, res, payload: dict) -> None:
         owner = next((e for e in res.entities if e.is_redacted and
                       phrase.lower() in {e.replacement_for(m[3]).lower() for m in e.mentions}), None)
     if owner is not None:
-        st.caption(f"Already redacted as **{owner.label}** ({examples(owner, 2)}). Change what it becomes:")
+        st.caption(f"Already hidden as **{owner.label}** ({examples(owner, 2)}). Change what it becomes:")
         rk, rv = replacement_picker(res, owner, "rd_owner", owner.label)
         c1, c2 = st.columns(2)
         if c1.button("Save", type="primary", width="stretch", key="rd_owner_save"):
@@ -1772,16 +1773,20 @@ def redact_dialog(sess: Session, res, payload: dict) -> None:
             st.rerun()
         return
     if not hits:
-        st.warning("Not found in the originals. Select plain text, or use ✎ on a placeholder.")
+        st.warning("Not found in the original files. Select plain text, or click a label to change it.")
         return
     total = sum(n for _, n in hits)
-    st.caption(f"{total} occurrence{'s' if total != 1 else ''} in " + ", ".join(res.names[i] for i, _ in hits)
-               + " — all will be redacted.")
-    kinds = {"PERSON": "Person", "ORGANIZATION": "Organization", "ACCOUNT_NUMBER": "Account number",
+    st.caption((f"{total} places" if total != 1 else "1 place") + " in " + ", ".join(res.names[i] for i, _ in hits)
+               + (" — all of them will be hidden." if total != 1 else " — it will be hidden."))
+    guess = likely_label(res, phrase)
+    kinds = {"PERSON": "Person", "ORGANIZATION": "Company", "ACCOUNT_NUMBER": "Account number",
              "CASE_NUMBER": "Case / docket number", "STREET_ADDRESS": "Address", "DATE": "Date",
-             **{t: type_name(t) for t in categories(sess, res) if t.startswith("OTHER:")},  # ones you've made
-             "MANUAL": "Just redact it (Redacted 1, 2…)", "OTHER": "Other — a new category…"}
-    kind = st.selectbox("What is it?", list(kinds), format_func=kinds.get, key="rd_kind")
+             **{t: type_name(t) for t in categories(sess, res) if t.startswith("OTHER:")}}  # ones you've made
+    kinds = {**dict(sorted(kinds.items(), key=lambda kv: kv[1].lower())),  # A–Z, then the two catch-alls
+             "MANUAL": "Just hide it (Redacted 1, 2…)", "OTHER": "Other — a new category…"}
+    # No silent default (A–Z would make it "Account number"): empty, unless it's part of a name you already have
+    kind = st.selectbox("What is it?", list(kinds), format_func=kinds.get, key="rd_kind", placeholder="Choose…",
+                        index=list(kinds).index(guess.type) if guess is not None and guess.type in kinds else None)
     desc, same = "", None
     if kind == "OTHER":
         desc = " ".join(st.text_input("Name the new category", placeholder="e.g. Age, Project codename, Fund name",
@@ -1793,15 +1798,14 @@ def redact_dialog(sess: Session, res, payload: dict) -> None:
                     + (f" — {first.label} is “{short(' '.join(first.canonical.split()), 30)}”" if first else "")
                     + f". This will be added to it as the next {cat_name(same)}, not as a second category. "
                     + "Next time, pick it from the list above.")
-    guess = likely_label(res, phrase)
     if guess is not None:
         st.caption(f"Looks like part of **{guess.label}** ({examples(guess, 2)}), so that label is selected. "
                    "Choose ➕ Add new replacement if it's something else.")
     rk, rv = replacement_picker(res, None, "rd_pick", "", title="Label",
                                 suggest=guess.key if guess is not None else None)
     c1, c2 = st.columns(2)
-    ready = not (kind == "OTHER" and not desc and rk == "new")
-    if c1.button("Redact everywhere", type="primary", width="stretch", disabled=not ready):
+    ready = rk == "existing" or (kind is not None and not (kind == "OTHER" and not desc))
+    if c1.button("Hide everywhere", type="primary", width="stretch", disabled=not ready):
         if rk == "existing":
             sess.redact_as(rv, phrase, note=f"Hide “{phrase[:40]}”")
         elif kind == "OTHER" and not same:
@@ -1809,12 +1813,12 @@ def redact_dialog(sess: Session, res, payload: dict) -> None:
         else:
             t = same or kind
             sess.redact(phrase, t, rv.strip(), f"{type_name(t)} {{1}}" if t.startswith("OTHER:") else "")
-        st.session_state.focus_note = f"Redacted “{phrase}” in {total} place{'s' if total != 1 else ''}"
+        st.session_state.focus_note = f"“{phrase}” is hidden in {total} place{'s' if total != 1 else ''}"
         st.rerun()
     if c2.button("Cancel", width="stretch"):
         st.rerun()
     if not ready:
-        st.caption("Name the category to create the label.")
+        st.caption("Name the new category to create the label." if kind == "OTHER" else "Choose what it is.")
 
 
 @st.dialog("Change label")
@@ -1846,7 +1850,7 @@ def edit_dialog(sess: Session, res, ref: str) -> None:
     if c2.button("Keep as written", width="stretch"):
         sess.decide(ref, "keep", note=f"Keep “{(item.text if is_flag else item.canonical)[:40]}”")
         st.rerun()
-    if not is_flag and c3.button("Don't hide this", width="stretch",
+    if not is_flag and c3.button("Don't hide it", width="stretch",
                                  help="Not a real name? It will appear as written in every file."):
         delete_entity(sess, item)
         st.rerun()
@@ -1855,8 +1859,8 @@ def edit_dialog(sess: Session, res, ref: str) -> None:
             split_controls(sess, res, item, f"ed-split-{ref}")
 
 
-STATUS_TEXT = {"redacted": "redacted", "generalized": "still showing (generalized)", "kept": "kept",
-               "flagged": "flagged for review", "changed": "changed", "partly redacted": "partly redacted",
+STATUS_TEXT = {"redacted": "hidden", "generalized": "still showing (generalized)", "kept": "kept",
+               "flagged": "flagged to check", "changed": "changed", "partly redacted": "partly hidden",
                "visible": "still showing"}
 
 
@@ -1871,7 +1875,7 @@ def show_hit(doc: int, k: int, entity_key: str = "") -> None:
 
 def search_panel(sess: Session, res) -> None:
     """Search every document for a word or phrase and see what happened to each occurrence."""
-    q = st.text_input("Search the documents", key="doc_search", label_visibility="collapsed",
+    q = st.text_input("Search the files", key="doc_search", label_visibility="collapsed",
                       placeholder="🔍 Search every file for a word or phrase…")
     if not q.strip():
         return
@@ -1879,10 +1883,10 @@ def search_panel(sess: Session, res) -> None:
     labelled = [e for e in res.entities if q.strip().lower() in e.label.lower() and e.label not in ("Kept", "")]
     for e in labelled[:3]:
         st.caption(f"“{e.label}” stands for {e.canonical} — {len(e.mentions)}× in "
-                   f"{len({m[0] for m in e.mentions})} file(s).")
+                   f"{(nf := len({m[0] for m in e.mentions}))} file{'s' if nf != 1 else ''}.")
     if not hits:
         if not labelled:
-            st.caption(f"“{q.strip()}” doesn't appear in any original document.")
+            st.caption(f"“{q.strip()}” doesn't appear in any original file.")
         return
     showing = [h for h in hits if h["status"] in ("visible", "generalized", "partly redacted")]
     docs_hit = sorted({h["doc"] for h in hits})
@@ -1908,7 +1912,7 @@ def search_panel(sess: Session, res) -> None:
             c2.button("Show", key=f"hit_{i}", width="stretch",
                       on_click=show_hit, args=(h["doc"], k, h["ref"] if h["ref"] and not h["ref"].startswith("flag")
                                                and h["status"] != "flagged" else ""))
-    if showing and st.button(f"Redact every “{q.strip()}”", key="search_redact", type="primary"):
+    if showing and st.button(f"Hide every “{q.strip()}”", key="search_redact", type="primary"):
         redact_dialog(sess, res, {"text": q.strip()})
 
 
@@ -1957,7 +1961,7 @@ def documents(sess: Session, res) -> None:
                 '<span>Hover a highlight to see what it is · click to change it</span></div>', unsafe_allow_html=True)
 
     for w in (sess.warnings[doc] if getattr(sess, 'warnings', None) and doc < len(sess.warnings) else []):
-        (st.error if w["level"] == "block" else st.caption)(("Blocks release — " if w["level"] == "block" else "Note: ")
+        (st.error if w["level"] == "block" else st.caption)(("Blocks download — " if w["level"] == "block" else "Note: ")
                                                             + w["message"])
     if edit:
         st.markdown('<p class="edit-hint">Select any text to hide it. (Click any label to change it — that works '
@@ -1965,7 +1969,7 @@ def documents(sess: Session, res) -> None:
 
     def head(d, v):
         btn = (f'<button class="pane-edit{" on" if edit else ""}" data-act="toggle-edit">'
-               f'{"✓ Done" if edit else "✎ Select to hide"}</button>') if v == "anonymized" else ""
+               f'{"✓ Done" if edit else "✎ Hide"}</button>') if v == "anonymized" else ""
         tick = '<span class="ok">✓ approved</span>' if is_current(sess, res, d) else ""
         return (f'<div class="pane-head"><div class="pane-top"><span class="pane-tag {v}">{v}</span>{btn}</div>'
                 f'<div class="pane-name">{html.escape(res.names[d])}{tick}</div></div>')
@@ -2017,7 +2021,7 @@ def documents(sess: Session, res) -> None:
                 note=f'{len(open_here)} item{"s" if len(open_here) != 1 else ""} in this file still '
                      f'need{"s" if len(open_here) == 1 else ""} a look' if open_here else "")
     if stale:
-        st.warning("Changed since you approved it. Approve again to update the package.")
+        st.warning("Changed since you approved it. Approve it again to update the download.")
     release_box(sess, res)
 
     with st.expander("Every change in this file"):
@@ -2038,7 +2042,8 @@ def final_view(sess: Session, res) -> None:
     checks = [
         (sess.rights_confirmed, "Rights confirmed"),
         (not cc["unreviewed"], "All items checked" if not cc["unreviewed"]
-         else f"{len(cc['unreviewed'])} item(s) still need a look"),
+         else f"{len(cc['unreviewed'])} item{'s' if len(cc['unreviewed']) != 1 else ''} still "
+              f"need{'s' if len(cc['unreviewed']) == 1 else ''} a look"),
         (cc["leak_free"], "No original names left" if cc["leak_free"] else "Some original text is still showing"),
         (current == n, f"{current} of {n} files approved"),
     ]
@@ -2100,7 +2105,7 @@ def audit_trail(sess: Session, res) -> None:
 # A saved setup: the settings and rule switches, plus the labels and corrections made by hand. Entries live in
 # this browser tab's session only (no database); "Use again" applies one to the next set that's started.
 LIBRARY_OPS = ("labels", "decisions", "retype", "manual", "merges", "splits", "deleted", "aliases", "parties")
-LIBRARY_EXAMPLES = [  # invented names; keys match the bundled 8-Ks, so "Use again" + "Try with sample case" shows it
+LIBRARY_EXAMPLES = [  # invented names; keys match the bundled 8-Ks, so "Use again" + "Try the sample case" shows it
     {"name": "Project Granite — merger 8-Ks", "date": "Sep 30, 2026",
      "settings": {"disabled": ["MONEY", "SHARE_COUNT"]},
      "ops": {"labels": {"ORGANIZATION:microsoft": "Acquirer", "ORGANIZATION:activision blizzard": "Target",
@@ -2131,41 +2136,44 @@ def library_summary(entry: dict) -> str:
     ops = entry["ops"]
     n_labels = len(ops.get("labels", {}))
     fixes = sum(len(ops.get(k, ())) for k in LIBRARY_OPS if k not in ("labels", "parties"))
-    return (f'{entry["toggles_on"]} toggles on · {n_labels} custom label{"s" if n_labels != 1 else ""}'
+    return (f'{entry["toggles_on"]} rules on · {n_labels} custom label{"s" if n_labels != 1 else ""}'
             + (f' · {fixes} correction{"s" if fixes != 1 else ""}' if fixes else ""))
 
 
 def manual_changes(sess: Session, res) -> list[tuple[str, str, str, object]]:
-    """Everything changed by hand in this set, one line each: (id, what it says, ops key, which entry)."""
+    """Everything changed by hand in this set, one line each: (id, what it says, ops key, which entries). The same
+    change made twice ("emerging" and "Emerging" hidden as Person A) is one line."""
     by_key = {e.key: e for e in res.entities}
     name = lambda k: by_key[k].canonical if k in by_key else deleted_text(k)
     label_of = lambda k: by_key[k].label if k in by_key else deleted_text(k)
+    flat = lambda t: " ".join(str(t).split())
     ops, out = sess.ops, []
+
+    def grouped(key: str, what, same):
+        """One line per distinct change in a list op; the line covers every index that's the same change."""
+        lines: dict = {}
+        for i, entry in enumerate(ops.get(key) or []):
+            lines.setdefault(same(entry), [what(entry), []])[1].append(i)
+        for n, (text, idx) in enumerate(lines.values()):
+            out.append((f"{key}:{n}", text, key, idx))
+
     for k, v in (ops.get("labels") or {}).items():
         out.append((f"labels:{k}", f"Label: {name(k)} → {v}", "labels", k))
-    for i, p in enumerate(ops.get("parties") or []):
-        out.append((f"parties:{i}", f"Always hide: {p['name']}", "parties", i))
-    for i, m in enumerate(ops.get("manual") or []):
-        kind = m.get("type") or "MANUAL"
-        out.append((f"manual:{i}", f"Hidden by hand: {' '.join(m['text'].split())}"
-                    + (f" ({cat_name(kind)})" if kind != "MANUAL" else ""), "manual", i))
-    for i, (k, text) in enumerate(ops.get("aliases") or []):
-        out.append((f"aliases:{i}", f"Hidden as {label_of(k)}: {' '.join(text.split())}", "aliases", i))
-    for i, k in enumerate(ops.get("deleted") or []):
-        out.append((f"deleted:{i}", f"Not a name, left as written: {deleted_text(k)}", "deleted", i))
+    grouped("parties", lambda p: f"Always hide: {flat(p['name'])}", lambda p: flat(p["name"]).casefold())
+    grouped("manual", lambda m: f"Hidden by hand: {flat(m['text'])}"
+            + (f" ({cat_name(m.get('type'))})" if (m.get("type") or "MANUAL") != "MANUAL" else ""),
+            lambda m: (flat(m["text"]).casefold(), m.get("type") or "MANUAL"))
+    grouped("aliases", lambda a: f"Hidden as {label_of(a[0])}: {flat(a[1])}", lambda a: (a[0], flat(a[1]).casefold()))
+    grouped("deleted", lambda k: f"Not a name, left as written: {deleted_text(k)}", lambda k: deleted_text(k).casefold())
     for k, t in (ops.get("retype") or {}).items():
         out.append((f"retype:{k}", f"{name(k)} is {a_noun(t)}", "retype", k))
-    for i, (src, dst) in enumerate(ops.get("merges") or []):
-        out.append((f"merges:{i}", f"{deleted_text(src)} is the same as {label_of(dst)}", "merges", i))
-    for i, op in enumerate(ops.get("splits") or []):
-        out.append((f"splits:{i}", f"Separated “{op[1]}”", "splits", i))
-    if ops.get("decisions"):
-        out.append(("decisions", f"Your answers in ② Check ({len(ops['decisions'])})", "decisions", None))
+    grouped("merges", lambda m: f"{deleted_text(m[0])} is the same as {label_of(m[1])}", lambda m: (m[0], m[1]))
+    grouped("splits", lambda op: f"Separated “{op[1]}” from {label_of(op[0])}", lambda op: (op[0], flat(op[1]).casefold()))
     return out
 
 
 def send_to_library(sess: Session, items: list) -> None:
-    """Save the ticked lines (and the settings, if ticked) as a Library entry."""
+    """Save what's ticked: the settings, your ② Check answers, and the edits picked under Entities."""
     import copy
     from datetime import date
     picked = [it for it in items if st.session_state.get(f"libpick_{it[0]}", True)]
@@ -2176,7 +2184,7 @@ def send_to_library(sess: Session, items: list) -> None:
         elif key in ("labels", "retype"):
             ops.setdefault(key, {})[ref] = sess.ops[key][ref]
         elif key != "settings":
-            ops.setdefault(key, []).append(copy.deepcopy(sess.ops[key][ref]))
+            ops.setdefault(key, []).extend(copy.deepcopy(sess.ops[key][i]) for i in ref)
     settings = sess.settings if any(key == "settings" for _, _, key, _ in picked) else {}
     name = " ".join(st.session_state.get("lib_name", "").split()) or f"{sess.policy.name} set"
     d = date.today()
@@ -2184,8 +2192,14 @@ def send_to_library(sess: Session, items: list) -> None:
     st.session_state.focus_note = f"Saved to Library: “{name}”"
 
 
+def set_lib_picks(ids: list[str], value: bool) -> None:
+    for iid in ids:
+        st.session_state[f"libpick_{iid}"] = value
+
+
 def library_offer(sess: Session, res) -> None:
-    """After the label key: would you like to send this to the Library for reuse? Tick what to keep."""
+    """After the label key: would you like to send this to the Library for reuse? Tick the settings and your
+    answers; under Entities, every edit is listed, all ticked, to untick what you don't want to keep."""
     from datetime import date
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     label("Library")
@@ -2193,18 +2207,31 @@ def library_offer(sess: Session, res) -> None:
     st.caption("Tick what to keep. “Use again” starts your next set with it.")
     disabled = sess.settings.get("disabled") or []
     on = sum(bid not in disabled for _, bid, _, _ in sess.policy.buckets())
-    items = [("settings", f"Settings and rule switches ({on} on)", "settings", None)] + manual_changes(sess, res)
-    for iid, text, _, _ in items:
+    top = [("settings", f"Settings and rule switches ({on} on)", "settings", None)]
+    if sess.ops.get("decisions"):
+        top.append(("decisions", f"Your answers in ② Check ({len(sess.ops['decisions'])})", "decisions", None))
+    edits = manual_changes(sess, res)
+    for iid, text, _, _ in top:
         st.session_state.setdefault(f"libpick_{iid}", True)
         st.checkbox(text, key=f"libpick_{iid}")
-    if len(items) == 1:
-        st.caption("Nothing was changed by hand in this set, so only the settings would be kept.")
+    if edits:
+        ids = [iid for iid, _, _, _ in edits]
+        for iid in ids:
+            st.session_state.setdefault(f"libpick_{iid}", True)
+        n_on = sum(bool(st.session_state.get(f"libpick_{iid}")) for iid in ids)
+        with st.expander(f"Entities you edited ({n_on} of {len(ids)} ticked)"):
+            st.session_state.lib_all = n_on == len(ids)
+            st.checkbox("Select all", key="lib_all", on_change=lambda: set_lib_picks(ids, st.session_state.lib_all))
+            for iid, text, _, _ in edits:
+                st.checkbox(text, key=f"libpick_{iid}")
+    else:
+        st.caption("You didn't edit any names or labels in this set, so only the settings and answers are kept.")
     c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
     d = date.today()
     c1.text_input("Name", f"{sess.policy.name} set · {d:%b} {d.day}", key="lib_name",
                   label_visibility="collapsed")
     c2.button("Send to Library", type="primary", width="stretch", key="lib_send", on_click=send_to_library,
-              args=(sess, items))
+              args=(sess, top + edits))
 
 
 def use_library_entry(i: int, start_over: bool = False) -> None:
@@ -2221,7 +2248,7 @@ def apply_library_entry(sess: Session, entry: dict) -> None:
     sess.ops.update(copy.deepcopy(entry["ops"]))
     for k in [k for k in st.session_state if k.startswith(("b_", "t_"))]:
         st.session_state.pop(k, None)  # the sidebar switches pick the saved values up again
-    st.session_state.focus_note = f"Using “{entry['name']}” from the Library — toggles and corrections applied"
+    st.session_state.focus_note = f"Using “{entry['name']}” from the Library — its settings and corrections are on"
 
 
 @st.dialog("Use this setup for a new set?")
@@ -2240,7 +2267,7 @@ def library_view(sess: Session | None) -> None:
             ".lib-meta { font-size:.85rem; color:var(--dim); } .lib-sum { font-size:.95rem; margin:.7rem 0 .2rem; }"
             "</style>")
     st.markdown('<h2>Library</h2>', unsafe_allow_html=True)
-    st.caption("Saved setups. Use one again and your next set starts with its toggles, labels and corrections.")
+    st.caption("Saved setups. Use one again and your next set starts with its rule switches, labels and corrections.")
     entries = library_entries()
     cols = st.columns(3)
     for i, entry in enumerate(entries):
@@ -2298,9 +2325,9 @@ sess: Session | None = st.session_state.get("session")
 if sess is not None and (type(sess) is not Session or getattr(sess, "VERSION", 0) != Session.VERSION):
     # The app was updated while this browser session was open: rebuild the set with the new engine,
     # keeping every decision, instead of crashing on the old object.
-    with st.spinner("The app was updated — re-checking your documents with the new rules…"):
+    with st.spinner("The app was updated — re-checking your files with the new rules…"):
         sess = st.session_state.session = Session.upgrade(sess)
-    st.toast("Updated to the latest rules — your decisions were kept.")
+    st.toast("Updated to the latest rules — your decisions were kept")
 header()
 st.session_state.my_rules = my_rules()  # mounted every run, so a save/delete from anywhere is applied
 if sess is not None and st.session_state.get("library_use"):  # the first run of a set started after "Use again"
@@ -2320,7 +2347,7 @@ else:
     n_ok = sum(is_current(sess, res, i) for i in range(len(res.names)))
     open_items = sum(res.item(k).status == "pending" for k in res.queue)
     if st.session_state.get("view") not in VIEWS:
-        st.session_state.view = "Review"
+        st.session_state.view = "Start"
     labels = {"Start": "① Files",
               "Review": "② Check" + (f" · {open_items} open" if open_items else " ✓"),
               "Documents": f"③ Read & approve · {n_ok}/{len(res.names)}",

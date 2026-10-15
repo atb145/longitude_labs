@@ -9,7 +9,7 @@ APP = str(pathlib.Path(__file__).resolve().parent.parent / "app.py")
 def test_sample_flow_all_views():
     at = AppTest.from_file(APP, default_timeout=180).run()
     assert not at.exception
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    next(b for b in at.button if b.label == "Try the sample case").click().run()
     assert not at.exception
     sess = at.session_state.session
     for view in ("Start", "Review", "Documents", "Final"):
@@ -95,7 +95,7 @@ def test_release_box_lists_leaks_with_show_and_fix():
     assert not at.exception, at.exception
     assert any("Where the original text is still showing" in m.value for m in at.markdown)
     show = next(b for b in at.button if b.label == "Show")
-    fix = next(b for b in at.button if b.label == "Redact it")
+    fix = next(b for b in at.button if b.label == "Hide it")
     fix.click().run()
     assert not at.exception, at.exception
     assert "Mercer" not in at.session_state.session.run().outputs[0]
@@ -104,7 +104,7 @@ def test_release_box_lists_leaks_with_show_and_fix():
 
 def test_search_panel_and_entity_search():
     at = AppTest.from_file(APP, default_timeout=180).run()
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    next(b for b in at.button if b.label == "Try the sample case").click().run()
     at.session_state.view = "Documents"
     at.run()
     at.text_input(key="doc_search").set_value("Mercer").run()
@@ -159,7 +159,7 @@ def test_rules_from_the_last_set_are_used_again():
     # "Start over" stores the session's rules in carry_rules (checked in the browser; AppTest can't click inside
     # a dialog). The home page then offers them first and the next set starts with them.
     at = AppTest.from_file(APP, default_timeout=180).run()
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    next(b for b in at.button if b.label == "Try the sample case").click().run()
     sess = at.session_state.session
     sess.settings["placeholder_style"] = "redacted"
     sess.add_party("Northwind Holdings", "ORGANIZATION")
@@ -170,7 +170,7 @@ def test_rules_from_the_last_set_are_used_again():
     at.run()
     assert not at.exception
     assert at.session_state.rules_pick == "Your rules from 01_complaint.txt + 2 more"
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    next(b for b in at.button if b.label == "Try the sample case").click().run()
     assert not at.exception
     again = at.session_state.session
     assert again.settings["placeholder_style"] == "redacted"
@@ -178,8 +178,7 @@ def test_rules_from_the_last_set_are_used_again():
 
 
 def test_review_all_at_once_and_bulk_approve():
-    at = AppTest.from_file(APP, default_timeout=180).run()
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    at, _ = _sample_app()
     assert not any(e.label == "Quick tips" for e in at.expander)
     sess = at.session_state.session
     pending = [k for k in sess.run().queue if sess.run().item(k).status == "pending"]
@@ -196,9 +195,7 @@ def test_review_all_at_once_and_bulk_approve():
 
 
 def test_open_item_from_list_and_return():
-    at = AppTest.from_file(APP, default_timeout=180).run()
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
-    sess = at.session_state.session
+    at, sess = _sample_app()
     second = [k for k in sess.run().queue if sess.run().item(k).status == "pending"][1]
     at.button(key=f"open_{second}").click().run()
     assert at.session_state.review_mode == "one" and at.session_state.review_pick == second
@@ -210,7 +207,7 @@ def test_open_item_from_list_and_return():
 
 def test_documents_progress_and_no_next_to_approve():
     at = AppTest.from_file(APP, default_timeout=180).run()
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    next(b for b in at.button if b.label == "Try the sample case").click().run()
     at.session_state.view = "Documents"
     at.run()
     assert not at.exception
@@ -218,10 +215,12 @@ def test_documents_progress_and_no_next_to_approve():
     assert sum("0 of 3 approved" in m.value for m in at.markdown) == 2   # top and next to the approve button
 
 
-def _sample_app():
+def _sample_app(view: str = "Review"):
     at = AppTest.from_file(APP, default_timeout=180).run()
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
-    return at, at.session_state.session
+    next(b for b in at.button if b.label == "Try the sample case").click().run()
+    assert at.session_state.view == "Start"                      # a new set opens on ① Files
+    at.session_state.view = view
+    return at.run(), at.session_state.session
 
 
 def _helpers():
@@ -315,7 +314,7 @@ def test_found_in_filters_the_spellings_by_document():
     at.sidebar.button(key=f"ent-{okafor.key}").click().run()
     assert "Hidden automatically" in [c.value for c in at.sidebar.caption]   # no "Person ·" in front
     found = at.sidebar.selectbox(key=f"in-{okafor.key}")
-    assert found.options[0].startswith("All 3 documents")
+    assert found.options[0].startswith("All 3 files")
     forms = lambda: next(m.value for m in at.sidebar.markdown if "class='form'" in m.value)
     assert "×6" in forms()                                   # "Okafor" ×6 across the set
     found.set_value(0).run()                                 # 01_complaint.txt only
@@ -336,11 +335,11 @@ def test_select_all_tick_box_replaces_all_and_none():
 
 
 def test_bundled_sample_is_the_two_sec_8ks(monkeypatch):
-    """The real "Try with sample case": Microsoft's 8-K announcing the Activision Blizzard deal and Activision
+    """The real "Try the sample case": Microsoft's 8-K announcing the Activision Blizzard deal and Activision
     Blizzard's 8-K closing it, named the way a deal team files them."""
     monkeypatch.setenv("ANONYMIZER_SAMPLES", str(pathlib.Path(APP).parent / "samples"))
     at = AppTest.from_file(APP, default_timeout=180).run()
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
+    next(b for b in at.button if b.label == "Try the sample case").click().run()
     assert not at.exception, at.exception
     sess = at.session_state.session
     assert sess.names == ["1 MSFT 8-K 2022-01-18 - Activision Blizzard deal announced.pdf",

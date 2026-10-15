@@ -99,7 +99,7 @@ def test_proxy_cover_names_the_registrant_and_parent_keeps_its_own_term():
     assert "ACME HOLDINGS" not in res.outputs[0] and "REGISTRANT\n(Name of Registrant" in res.outputs[0]
 
 
-# ---------------------------------------------------------------- "Don't hide this" sticks, and is learned
+# ---------------------------------------------------------------- "Don't hide it" sticks, and is learned
 def _taught_session(policy="Finance"):
     """A made-up word no built-in rule keeps, so the test is about what a reviewer teaches, not the pack."""
     from engine import Detection

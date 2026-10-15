@@ -7,10 +7,11 @@ from streamlit.testing.v1 import AppTest
 APP = str(pathlib.Path(__file__).resolve().parent.parent / "app.py")
 
 
-def _sample():
+def _sample(view: str = "Review"):
     at = AppTest.from_file(APP, default_timeout=180).run()
-    next(b for b in at.button if b.label == "Try with sample case").click().run()
-    return at, at.session_state.session
+    next(b for b in at.button if b.label == "Try the sample case").click().run()
+    at.session_state.view = view                                  # a new set opens on ① Files
+    return at.run(), at.session_state.session
 
 
 def _next(at):
@@ -107,3 +108,21 @@ def test_change_reopens_a_checked_item_and_undo_restores_the_answer():
     assert any(b.label == "← Back to the list" for b in at.button)
     sess.undo()                                                       # changed your mind: the answer is back
     assert sess.run().item(k).status == "accepted"
+
+
+def test_library_offer_settings_ticked_edits_under_entities_with_select_all():
+    at, sess = _sample(view="Final")
+    person = next(e for e in sess.run().entities if e.type == "PERSON" and e.is_redacted)
+    sess.redact_as(person.key, "emerging")
+    sess.redact_as(person.key, "Emerging")                    # the same edit twice, in another case
+    sess.rename("ORGANIZATION:meridian clearing", "Clearing firm")
+    at.run()
+    assert at.checkbox(key="libpick_settings").value
+    assert any(e.label.startswith("Entities you edited (2 of 2") for e in at.expander)
+    alias_lines = [c for c in at.checkbox if c.key and c.key.startswith("libpick_aliases")]
+    assert len(alias_lines) == 1                              # "emerging" / "Emerging" is one line
+    at.checkbox(key="lib_all").uncheck().run()                # untick every edit at once
+    assert not at.checkbox(key="libpick_labels:ORGANIZATION:meridian clearing").value
+    next(b for b in at.button if b.label == "Send to Library").click().run()
+    saved = at.session_state.library[0]
+    assert "labels" not in saved["ops"] and "aliases" not in saved["ops"] and saved["settings"]
