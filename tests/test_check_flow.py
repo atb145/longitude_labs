@@ -76,3 +76,17 @@ def test_library_offer_after_the_label_key_saves_only_what_you_tick():
     assert saved["name"] == "Only the label"
     assert saved["ops"].get("labels") == {"ORGANIZATION:meridian clearing": "Clearing firm"}
     assert "parties" not in saved["ops"]
+
+
+def test_files_step_label_overview_shows_type_label_before_after():
+    at, sess = _sample()
+    at.session_state.view = "Start"
+    at.run()
+    assert not [b for b in at.button if b.label == "Apply labels"]   # an overview now, not an editor
+    import re
+    table = next(m.value for m in at.markdown if 'class="lblov"' in m.value)
+    assert re.findall(r"<th>(\w+)</th>", table) == ["Type", "Label", "Before", "After"]
+    row = next(r for r in table.split("<tr>") if '<td class="l">Respondent</td>' in r)
+    before, after = re.findall(r"<td>(.*?)</td>", row)
+    assert '<td class="t">Person</td>' in row and "<mark>" in before and "Okafor" in before
+    assert "Respondent" in after and "Okafor" not in after

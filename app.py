@@ -189,11 +189,22 @@ def inject_css() -> None:
     .st-key-stepnav { margin-top: .4rem; }
     /* Streamlit pulls every markdown block up 1rem to cancel a last paragraph's margin. Rows built from our own
        HTML (no paragraph) then sit on the card's border or the button below; give them back that space. */
-    [data-testid="stMarkdownContainer"]:has(> :is(.qrow, .hit-row, .lib-sum, .checked):last-child) { margin-bottom: 0; }
+    [data-testid="stMarkdownContainer"]:has(> :is(.qrow, .hit-row, .lib-sum, .checked, .lblov):last-child) { margin-bottom: 0; }
     .checked-row { padding: .55rem 0; border-bottom: 1px solid var(--rule); font-size: .95rem; overflow-wrap: anywhere; }
     .checked-row:last-child { border-bottom: 0; }
     .checked-row .st { font-size: .8rem; color: var(--dim); margin-left: .4rem; }
     .lib-ask { font-family: var(--serif); font-size: 1.25rem; margin: .2rem 0 .1rem; }
+    /* Label overview on ① Files: type, label, one example before and after; text wraps, long sets scroll */
+    .lblov { max-height: 34rem; overflow-y: auto; border: 1px solid var(--rule); border-radius: .8rem; }
+    .lblov table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: .9rem; line-height: 1.5; }
+    .lblov th:nth-child(1) { width: 8.5rem; } .lblov th:nth-child(2) { width: 9.5rem; }
+    .lblov th { position: sticky; top: 0; background: var(--background-color, Canvas); text-align: left;
+                font-size: .72rem; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
+                padding: .6rem .8rem; border-bottom: 1px solid var(--rule); }
+    .lblov td { padding: .55rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; overflow-wrap: break-word; }
+    .lblov tr:last-child td { border-bottom: 0; }
+    .lblov td.t { color: var(--dim); } .lblov td.l { font-weight: 500; }
+    .lblov mark { background: var(--soft); color: #272727; padding: 0 .2em; border-radius: .3rem; }
     .st-key-selall { align-items: flex-start; padding-left: 1rem; margin-bottom: -.6rem; }
     .st-key-selall [data-testid="stCheckbox"] { width: auto; }
     .st-key-selall [data-testid="stCheckbox"] label { font-size: .85rem; }
@@ -1021,6 +1032,44 @@ def confirm_start_over() -> None:
         st.rerun()
 
 
+def _reads_now_html(res, doc: int, a: int, b: int) -> str:
+    """The text between a and b as it reads in the output (every replacement applied, labels as chips)."""
+    text, out, pos = res.texts[doc], [], a
+    flat = lambda t: html.escape(re.sub(r"\s+", " ", t))   # keep the spacing, one space per gap
+    for g in sorted(res.segments[doc], key=lambda g: g.start):
+        if g.start < pos or g.end > b:
+            continue
+        out.append(flat(text[pos:g.start]))
+        if g.kind == "tidy" or not g.replacement:
+            out.append(html.escape(g.replacement))
+        else:
+            out.append(f'<span class="chip t-{color_type(g.type)}">{html.escape(g.replacement)}</span>')
+        pos = g.end
+    out.append(flat(text[pos:b]))
+    return "".join(out).strip()
+
+
+def example_pair(res, e) -> tuple[str, str]:
+    """One place a label is used, with a few words either side, as HTML: (as written with the name marked, as
+    it reads now)."""
+    doc, s, end, orig = e.mentions[0]
+    text, segs = res.texts[doc], res.segments[doc]
+    a, b = max(0, s - 32), min(len(text), end + 32)
+    if a > 0 and " " in text[a:s]:
+        a = text.index(" ", a) + 1              # start and end on whole words
+    if b < len(text) and " " in text[end:b]:
+        b = text.rindex(" ", end, b)
+    for g in segs:                              # and never cut through another hidden name
+        if g.start < a < g.end:
+            a = g.start
+        if g.start < b < g.end:
+            b = g.end
+    pre, post = "…" if a > 0 else "", "…" if b < len(text) else ""
+    flat = lambda t: html.escape(re.sub(r"\s+", " ", t))
+    before = f"{pre}{(flat(text[a:s]) + f'<mark>{flat(orig)}</mark>' + flat(text[end:b])).strip()}{post}"
+    return before, f"{pre}{_reads_now_html(res, doc, a, b)}{post}"
+
+
 def start_view(sess: Session, res) -> None:
     """Step 1 while a set is open: the files, add more, labels. (Next is the button at the bottom.)"""
     st.markdown('<h2>Your files</h2>', unsafe_allow_html=True)
@@ -1035,31 +1084,19 @@ def start_view(sess: Session, res) -> None:
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     st.markdown('<div class="ll-rule"></div>', unsafe_allow_html=True)
     label("Labels")
-    st.caption("Rename a label (Company B → Receiving bank). Each label is used for one name only.")
-    ents = [e for e in res.entities if e.is_redacted and e.type in ("PERSON", "ORGANIZATION", "MANUAL")
-            and not e.nick_target]
-    table = pd.DataFrame([{"label": e.label, "type": type_name(e.type), "examples": examples(e),
-                           "documents": len({m[0] for m in e.mentions}), "_key": e.key} for e in ents])
-    if not table.empty:
-        edited = st.data_editor(table, hide_index=True, width="stretch", key="labels_editor",
-                                column_order=["label", "type", "examples", "documents"],
-                                disabled=["type", "examples", "documents"],
-                                column_config={"label": st.column_config.TextColumn("Label", required=True)})
-        if st.button("Apply labels", type="primary", key="apply_labels"):
-            errors, changed = [], 0
-            for (_, before), (_, after) in zip(table.iterrows(), edited.iterrows()):
-                if str(after["label"]).strip() and str(after["label"]).strip() != before["label"]:
-                    try:
-                        sess.rename(before["_key"], str(after["label"]),
-                                    note=f"Rename {before['label']} → “{str(after['label']).strip()}”")
-                        changed += 1
-                    except ValueError as exc:
-                        errors.append(str(exc))
-            for err in errors:
-                st.error(err)
-            if changed and not errors:
-                st.session_state.focus_note = f"Renamed {changed} label{'s' if changed != 1 else ''}"
-                st.rerun()
+    st.caption("Every label in this set, with one place it's used: as written, and as it reads now. To rename a "
+               "label, open it under Names & labels in the sidebar, or click it in a document.")
+    natural = lambda v: [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", v.lower())]  # Person 2 before 10
+    ents = sorted((e for e in res.entities if e.is_redacted and not e.nick_target and e.mentions),
+                  key=lambda e: (cat_name(e.type), natural(e.label)))
+    rows = []
+    for e in ents:
+        before, after = example_pair(res, e)
+        rows.append(f'<tr><td class="t">{html.escape(cat_name(e.type))}</td><td class="l">{html.escape(e.label)}</td>'
+                    f'<td>{before}</td><td>{after}</td></tr>')
+    if rows:
+        st.markdown('<div class="lblov"><table><thead><tr><th>Type</th><th>Label</th><th>Before</th><th>After</th>'
+                    f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>', unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------- review
