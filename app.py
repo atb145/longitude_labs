@@ -9,6 +9,7 @@ import html
 import io
 import re
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -179,10 +180,12 @@ def inject_css() -> None:
     [data-testid="stSidebar"] [data-testid="stPopover"] button { justify-content: flex-start; text-align: left; }
     [data-testid="stButtonGroup"] div:has(> button) { flex-wrap: wrap; row-gap: .3rem; }
     [data-testid="stSidebar"] [data-testid="stPopover"] button p { text-align: left; }
-    .st-key-entlist .stButton button { justify-content: flex-start; text-align: left; white-space: normal; }
+    /* One corner size for every name row (one line or two) and its open box: same edges as a one-line pill */
+    .st-key-entlist .stButton button { justify-content: flex-start; text-align: left; white-space: normal;
+                                       border-radius: 1.25rem; }
     .st-key-entlist .stButton button > div, .st-key-entlist .stButton button > div > span { justify-content: flex-start; }
     .st-key-entlist .stButton button p { text-align: left; }
-    .st-key-entlist [class*="st-key-ented-"] { padding: .7rem .75rem; margin: -.2rem 0 .3rem; }
+    .st-key-entlist [class*="st-key-ented-"] { padding: .7rem .75rem; margin: -.2rem 0 .3rem; border-radius: 1.25rem; }
     .st-key-stepnav { margin-top: .4rem; }
     /* Busy indicator: a "Working…" pill, top right, whenever the app is processing (fades in after .25s) */
     [data-testid="stApp"][data-test-script-state="running"]::after {
@@ -724,10 +727,10 @@ def move_to_category(sess: Session, e, new_type: str) -> None:
 
 
 def entity_editor(sess: Session, res, e) -> None:
-    """A name's label, how it's written, and one question: what should happen to it?"""
-    docs = sorted({m[0] for m in e.mentions})
-    st.caption(f"{type_name(e.type)} · {STATUS_WORDS.get(e.status, e.status)} · in "
-               f"{', '.join(short(sess.names[d], 22) for d in docs)}")
+    """A name's label, where it's found (pick a file to see only what's in it), how it's written, and one
+    question: what should happen to it?"""
+    status = STATUS_WORDS.get(e.status, e.status)
+    st.caption(status[:1].upper() + status[1:])
     if e.is_redacted and not e.nick_target:  # stacked: the sidebar is too narrow for a field and a button side by side
         new = st.text_input("Label", e.label, key=f"lbl-{e.key}-{e.label}", help="Replaces it in every file.")
         if st.button("Rename", key=f"rn-{e.key}", width="stretch") and new.strip() not in ("", e.label):
@@ -738,8 +741,19 @@ def entity_editor(sess: Session, res, e) -> None:
                 st.rerun()
             except ValueError as exc:
                 st.error(str(exc))
+    per_doc = Counter(m[0] for m in e.mentions)
+    if len(per_doc) > 1:
+        doc = st.selectbox("Found in", [None] + sorted(per_doc), key=f"in-{e.key}",
+                           format_func=lambda d: f"All {len(per_doc)} documents · ×{len(e.mentions)}" if d is None
+                           else f"{short(sess.names[d], 30)} · ×{per_doc[d]}")
+    else:
+        doc = None
+        only = next(iter(per_doc))
+        st.markdown(f'<p class="ll-sub">Found in {html.escape(short(sess.names[only], 30))} · ×{per_doc[only]}</p>',
+                    unsafe_allow_html=True)
+    shown = Counter(m[3] for m in e.mentions if doc is None or m[0] == doc)
     st.markdown("<br>".join(f"<span class='form'>{html.escape(f)}</span> <span class='dim'>×{n}</span>"
-                            for f, _, n, _, _ in forms_of(e)), unsafe_allow_html=True)
+                            for f, n in shown.items()), unsafe_allow_html=True)
     others = sorted((o for o in res.entities if o.key != e.key and o.is_redacted),
                     key=lambda o: (o.type != e.type, o.label))
     actions = {"move": "Move to another category"}  # short: the sidebar is narrow
@@ -827,11 +841,15 @@ def sidebar(sess: Session, res) -> None:
                     '<p class="sb-warn">Nothing is saved — refreshing or closing this tab clears your work.</p>',
                     unsafe_allow_html=True)
 
+        # ---- Labels: with context (roles) or simple (Person A) — up top, it changes every label
+        label_modes = {"context": "With context", "simple": "Simple"}
+        st.session_state.setdefault("t_labels", "context" if s.get("role_labels", False) else "simple")
+        st.segmented_control("Labels", list(label_modes), key="t_labels", format_func=label_modes.get, width="stretch",
+                             help="With context: roles and kinds of title — Defendant, Signatory, Assistant "
+                                  "secretary. Simple: Person A, Company B, Title 1.")
+
         # ---- Settings
         with st.expander("Settings"):
-            st.session_state.setdefault("t_roles", bool(s.get("role_labels", False)))
-            st.toggle("Label by role and context", key="t_roles",
-                      help="Defendant, Buyer, 'Address of principal executive offices'… instead of Company A.")
             date_modes = {"month_year": "Month + year", "shifted": "Shifted (same gaps)",
                           "relative": "Relative (Day 0, Day 6…)", "exact": "Exact"}
             styles = {"labels": "Labels (Person A, Acquirer…)", "redacted": "[REDACTED]", "remove": "Remove the text"}
@@ -864,7 +882,7 @@ def sidebar(sess: Session, res) -> None:
                     except (ValueError, UnicodeDecodeError) as exc:
                         st.error(str(exc))
                 st.caption("Your decisions are kept.")
-        s["role_labels"] = st.session_state.t_roles
+        s["role_labels"] = {"context": True, "simple": False}.get(st.session_state.t_labels, s.get("role_labels", False))
         s["placeholder_style"] = st.session_state.t_style
         s["date_mode"] = st.session_state.t_dates
         s["public_companies"] = st.session_state.t_pub
@@ -889,6 +907,7 @@ def sidebar(sess: Session, res) -> None:
         s["disabled"] = [bid for items in groups.values() for bid, _, _ in items if not st.session_state[f"b_{bid}"]]
 
         # ---- Names & labels: filter (All · To review · by type), alphabetical
+        res = sess.run()  # the switches above may have just changed every label
         natural = lambda v: [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", v.lower())]  # Amount 2 before 10
         alpha = lambda items: sorted(items, key=lambda x: (natural(x.label), x.canonical.lower()))
         by_type: dict[str, list] = {}

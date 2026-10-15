@@ -278,6 +278,33 @@ def split_key(ent_key: str, src_type: str, form: str, new_type: str | None = Non
     return key if key != ent_key else f"{ent_key}#split"
 
 
+# Labels with context: a title becomes the kind of role it is. Rank and department are dropped (together they
+# point to one person: "Senior Vice President, Corporate Governance and Corporate Secretary" → "Secretary"); the
+# function stays readable ("Assistant Secretary" → "Assistant secretary"). First match wins.
+_ROLES = [
+    (r"\bassistant\s+(?:corporate\s+)?secretary\b", "Assistant secretary"),
+    (r"\bgeneral\s+counsel\b|\bchief\s+legal\b|\blegal\s+officer\b", "Legal officer"),
+    (r"\bsecretary\b", "Secretary"),
+    (r"\bchief\s+executive\b|\bCEO\b", "Chief executive"),
+    (r"\bchief\s+financial\b|\bCFO\b|\btreasurer\b|\bcontroller\b|\bcomptroller\b|\baccounting\s+officer\b",
+     "Finance officer"),
+    (r"\bcompliance\b", "Compliance officer"),
+    (r"\bchief\s+\w+\s+officer\b|\bC[A-Z]O\b", "Senior executive"),
+    (r"\bvice\s+president\b|\bVP\b", "Vice president"),
+    (r"\bpresident\b", "President"),
+    (r"\bchair(?:man|woman|person)?\b", "Chair"),
+    (r"\bdirector\b", "Director"),
+    (r"\bpartner\b", "Partner"),
+    (r"\bmanager\b", "Manager"),
+    (r"\bsignatory\b", "Authorized signatory"),
+]
+
+
+def general_role(title: str) -> str:
+    """The kind of role a job title describes ("Executive Vice President and CFO" → "Finance officer")."""
+    return next((role for rx, role in _ROLES if re.search(rx, title, re.IGNORECASE)), "Officer")
+
+
 def type_title(etype: str) -> str:
     """Display name for a type, including custom ones typed in by a reviewer ("OTHER:Project codename")."""
     return etype.split(":", 1)[1] if etype.startswith("OTHER:") else etype.replace("_", " ").title()
@@ -983,6 +1010,9 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
                 e.reason = "Days from the earliest date; gaps survive."
         if e.type in ("MONEY", "SHARE_COUNT"):
             e.proposed = round_figure(e.mentions[0][3])
+        if e.type == "JOB_TITLE" and settings.get("role_labels", False):  # labels with context: the kind of role
+            e.proposed = general_role(e.mentions[0][3])
+            e.rule, e.reason = "generalize.titles", "Shown as the kind of role; the exact title points to one person."
         caption = caption_of(e) if settings.get("role_labels", False) and e.type in ("STREET_ADDRESS",
                                                                                          "POSTAL_CODE") else ""
         if caption and not (ops.get("labels") or {}).get(e.key):
