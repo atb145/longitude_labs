@@ -336,8 +336,11 @@ def reset() -> None:
     sess = st.session_state.get("session")
     if sess is not None and hasattr(sess, "export_rules"):
         try:  # "Start over" clears the files, not your rules
+            files = sess.names[0] if len(sess.names) == 1 else f"{', '.join(sess.names[:-1])} and {sess.names[-1]}"
             st.session_state.carry_rules = sess.export_rules(
-                f"{sess.policy.name}", f"Your settings and names from the last set ({sess.policy.name}).")
+                f"{sess.policy.name}", f"Your settings and names from {files} ({sess.policy.name} rules).")
+            st.session_state.carry_from = sess.names[0] + (f" + {len(sess.names) - 1} more" if len(sess.names) > 1
+                                                           else "")
         except Exception:  # noqa: BLE001 — never block a reset
             pass
     for k in [k for k in st.session_state if k.startswith(("b_", "t_"))] + ["session", "view", "editing", "focus", "edit_mode", "doc_pick", "last_action", "rights_ok", "rules_pick", "rules_touched"]:
@@ -622,8 +625,9 @@ def home() -> None:
     policies = available_policies()
     library = st.session_state.get("my_rules") or {}
     choices: dict[str, tuple[str, str]] = {}           # label → (kind, value)
+    last = f"Your rules from {st.session_state.get('carry_from') or 'the last set'}"  # names the set it came from
     if st.session_state.get("carry_rules"):
-        choices["Your rules from the last set"] = ("yaml", st.session_state.carry_rules)
+        choices[last] = ("yaml", st.session_state.carry_rules)
     for nm in sorted(library):
         choices[f"★ {nm}"] = ("yaml", library[nm]["yaml"])
     for nm in policies:
@@ -631,7 +635,7 @@ def home() -> None:
     labels_ = list(choices)
     if not st.session_state.get("rules_touched"):  # default: last set's rules, else your newest saved rules
         newest = max(library, key=lambda nm: library[nm].get("at", ""), default=None)
-        st.session_state.rules_pick = ("Your rules from the last set" if st.session_state.get("carry_rules")
+        st.session_state.rules_pick = (last if st.session_state.get("carry_rules")
                                        else f"★ {newest}" if newest else labels_[0])
     if st.session_state.get("rules_pick") not in choices:
         st.session_state.rules_pick = labels_[0]
