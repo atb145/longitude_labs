@@ -178,10 +178,12 @@ def inject_css() -> None:
     [data-testid="stSidebar"] [data-testid="stPopover"] button { justify-content: flex-start; text-align: left; }
     [data-testid="stButtonGroup"] div:has(> button) { flex-wrap: wrap; row-gap: .3rem; }
     [data-testid="stSidebar"] [data-testid="stPopover"] button p { text-align: left; }
-    .st-key-entlist .stButton button { justify-content: flex-start; text-align: left; white-space: normal; }
+    /* One corner size for every name row (one line or two) and its open box: same edges as a one-line pill */
+    .st-key-entlist .stButton button { justify-content: flex-start; text-align: left; white-space: normal;
+                                       border-radius: 1.25rem; }
     .st-key-entlist .stButton button > div, .st-key-entlist .stButton button > div > span { justify-content: flex-start; }
     .st-key-entlist .stButton button p { text-align: left; }
-    .st-key-entlist [class*="st-key-ented-"] { padding: .7rem .75rem; margin: -.2rem 0 .3rem; }
+    .st-key-entlist [class*="st-key-ented-"] { padding: .7rem .75rem; margin: -.2rem 0 .3rem; border-radius: 1.25rem; }
     .st-key-stepnav { margin-top: .4rem; }
     /* Busy indicator: a "Working…" pill, top right, whenever the app is processing (fades in after .25s) */
     [data-testid="stApp"][data-test-script-state="running"]::after {
