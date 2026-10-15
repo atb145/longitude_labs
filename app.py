@@ -2011,7 +2011,7 @@ def documents(sess: Session, res) -> None:
 
     def head(d, v):
         btn = (f'<button class="pane-edit{" on" if edit else ""}" data-act="toggle-edit">'
-               f'{"✓ Done" if edit else "✎ Hide"}</button>') if v == "anonymized" else ""
+               f'{"✓ Done" if edit else "✎ Edit"}</button>') if v == "anonymized" else ""
         tick = '<span class="ok">✓ approved</span>' if is_current(sess, res, d) else ""
         return (f'<div class="pane-head"><div class="pane-top"><span class="pane-tag {v}">{v}</span>{btn}</div>'
                 f'<div class="pane-name">{html.escape(res.names[d])}{tick}</div></div>')
