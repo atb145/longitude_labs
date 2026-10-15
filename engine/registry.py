@@ -305,6 +305,16 @@ def general_role(title: str) -> str:
     return next((role for rx, role in _ROLES if re.search(rx, title, re.IGNORECASE)), "Officer")
 
 
+def name_words(text: str) -> frozenset[str]:
+    """The words of a name, ignoring case, punctuation and digits: "COVID-19", "Covid-" and "covid" are one."""
+    return frozenset(re.findall(r"[a-z]+", text.casefold()))
+
+
+def deleted_text(key: str) -> str:
+    """The text of a registry key ("ORGANIZATION:covid-19" → "covid-19")."""
+    return key.removesuffix("#split").split(":", 1)[-1].split("manual:", 1)[-1]
+
+
 def type_title(etype: str) -> str:
     """Display name for a type, including custom ones typed in by a reviewer ("OTHER:Project codename")."""
     return etype.split(":", 1)[1] if etype.startswith("OTHER:") else etype.replace("_", " ").title()
@@ -394,7 +404,43 @@ def _greedy(cands: list[tuple]) -> list[tuple]:
     return sorted(chosen)
 
 
-def _clean_name(d: Detection, policy: Policy, lower_words: set[str]) -> Detection | None:
+# General rules for what is not a name, for any document (not lists tuned to one filing).
+# A letter's greeting or a memo's routing word is never part of a name ("Dear Activision Blizzard").
+_SALUTATIONS = {"dear", "attn", "attention", "re", "regarding", "cc", "bcc", "honorable", "hon", "hon."}
+# A "company" whose last word is one of these is a thing: a time, a law, a document, a defined term, a place
+# ("Pacific Time", "Effective Time", "Consumer Privacy Act", "MIT License", "U.S. Holders", "20th Floor").
+_THING_ENDINGS = {"time", "date", "period", "act", "acts", "license", "licence", "agreement", "agreements",
+                  "rule", "rules", "regulation", "regulations", "code", "treaty", "directive", "statute",
+                  "standards", "guidelines", "holder", "holders", "floor", "suite", "avenue", "street", "road",
+                  "boulevard", "drive", "lane", "plaza", "parkway", "court", "courts", "chancery", "department",
+                  "bureau", "section", "sections"}
+# Page and section numbers that tables of contents and cross-references leave after a name
+# ("Activision Blizzard 2", "Non-Contravention A-24", "Board Recommendation Change 5.3(c)(i").
+_REF_TOKEN = re.compile(r"(?:[A-Z]-)?\d+[A-Z]?(?:[.\-–]\d+[A-Z]?)*(?:\([a-z0-9]+\)?)*")
+_STATE_ZIP = re.compile(r"[a-z]{2},?\s+\d{5}(?:-\d{4})?")  # "PA 19355": an address line, not a name
+_ENDS_IN_SUFFIX = re.compile(r"(?:,?\s+)" + ORG_SUFFIX_RX + r"$")
+# A contract's own vocabulary: “Governmental Authority” means …, or an “ERISA Affiliate”. Parties are named
+# differently — Microsoft Corporation (“Microsoft”) or (the “Company”) — so those stay names.
+_DEFINED_TERM = re.compile(r"“([A-Z][^”\n]{1,60})”\s+(?:means|shall mean|has the meaning|shall have the meaning)"
+                           r"|\b(?:a|an|each|any)\s+“([A-Z][^”\n]{1,60})”")
+
+
+def _singular(phrase: str) -> str:
+    head, _, last = phrase.rpartition(" ")
+    last = last[:-3] + "y" if last.endswith("ies") else last[:-1] if last.endswith("s") and not last.endswith("ss") else last
+    return f"{head} {last}".strip()
+
+
+def defined_terms(texts: list[str]) -> set[str]:
+    """Terms the documents define for themselves (lowercase, singular). Never names, in any document."""
+    out = set()
+    for t in texts:
+        for m in _DEFINED_TERM.finditer(t):
+            out.add(_singular(" ".join((m.group(1) or m.group(2)).split()).lower()))
+    return out
+
+
+def _clean_name(d: Detection, policy: Policy, lower_words: set[str], defined: set[str] = frozenset()) -> Detection | None:
     """Trim words detectors glue onto names ("Defendants Meyer Global LLC", "Company A wired")."""
     if d.type == "URL":  # a sentence's full stop or comma isn't part of the link
         text = d.text.rstrip(".,;:!?)]”\"'")
@@ -411,27 +457,43 @@ def _clean_name(d: Detection, policy: Policy, lower_words: set[str]) -> Detectio
     def lead_noise(t):
         w = bare(t)
         return (w in policy.name_noise or t.group()[:1].islower() or re.fullmatch(r"[ivx]+\.?", w) is not None
-                or w in {"defendant", "defendants", "plaintiff", "respondent"})
+                or w in {"defendant", "defendants", "plaintiff", "respondent"} or w in _SALUTATIONS)
+
+    def in_run(t):
+        return t.group()[:1].isupper() or t.group()[:1].isdigit() or bare(t) in {"and", "of", "&", "de"}
 
     i, j = 0, len(toks)
     while i < j and lead_noise(toks[i]):
         i += 1
     # keep only the first capitalized run (connectors allowed inside it)
     k = i
-    while k < j and (toks[k].group()[:1].isupper() or toks[k].group()[:1].isdigit() or bare(toks[k]) in {"and", "of", "&", "de"}):
-        if k > i and bare(toks[k]) in policy.name_noise:
-            break  # "Microsoft Announces Partnership…" → "Microsoft"
+    while k < j and in_run(toks[k]):
         k += 1
+    run = d.text[toks[i].start():toks[k - 1].end()].rstrip(",;:“”\"(") if k > i else ""
+    if not (d.type == "ORGANIZATION" and _ENDS_IN_SUFFIX.search(run)):  # "Anchorage Merger Sub Inc." is one name
+        k = i
+        while k < j and in_run(toks[k]):
+            if k > i and bare(toks[k]) in policy.name_noise:
+                break  # "Microsoft Announces Partnership…" → "Microsoft"
+            k += 1
     j = k
     while j > i and bare(toks[j - 1]) in {"and", "of", "&", "for", "de"}:
+        j -= 1
+    # page or section numbers after a name; a bare number only after two name words ("Studio 54" stays)
+    while j - i >= 2 and _REF_TOKEN.fullmatch(toks[j - 1].group().rstrip(".,;:")) and (
+            not toks[j - 1].group().rstrip(".,;:").isdigit() or j - i >= 3):
         j -= 1
     if i >= j:
         return None
     start, end = d.start + toks[i].start(), d.start + toks[j - 1].end()
-    text = d.text[toks[i].start():toks[j - 1].end()].rstrip(",;:“”\"(")
+    text = d.text[toks[i].start():toks[j - 1].end()].rstrip(",;:“”\"(-–")  # "Activision Blizzard-" (line break)
     end = start + len(text)
     norm = re.sub(r"\s+", " ", _strip_possessive(text)).strip("“”\"").lower()
-    if not norm or norm in policy.not_entities:
+    if not norm or norm in policy.not_entities or _STATE_ZIP.fullmatch(norm) or not re.search(r"[^\W\d_]", norm):
+        return None  # (a "name" with no letters is a page number or a date: "3/228 10/14/26")
+    if d.type == "ORGANIZATION" and " " in norm and norm.split()[-1].strip(".,") in _THING_ENDINGS:
+        return None
+    if _singular(norm) in defined:
         return None
     # A single capitalized word that also appears in lowercase elsewhere is a common word, not a name.
     if d.source == "SpacyRecognizer" and " " not in norm and norm in lower_words:
@@ -506,7 +568,8 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
     addr = re.compile(r"\S+@\S+|\b(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|gov|edu|io|co|ai|us|uk)\b\S*")
     lower_words = {w for t in texts for w in re.findall(r"(?<![\w’'-])[a-z][a-z’'-]+", addr.sub(" ", t))}
     locations = {re.sub(r"\s+", " ", d.text).lower() for d in detections if d.type == "LOCATION"}
-    cleaned = [_clean_name(d, policy, lower_words) for d in detections]
+    defined = defined_terms(texts)
+    cleaned = [_clean_name(d, policy, lower_words, defined) for d in detections]
     usable = [d for d in cleaned
               if d and policy.spec(d.type).get("action") != "ignore" and not _overlaps((d.start, d.end), keep[d.doc])
               and re.sub(r"\s+", " ", _strip_possessive(d.text)).lower() not in policy.not_entities]
@@ -719,6 +782,18 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         if gone:
             sample = next(iter(sorted(gone.variants)), "").removeprefix(LIT)
             deleted_items.append((key, gone.type, sample))
+    # "Don't hide this" is about the words, not the type the detector guessed: the same text picked up again as
+    # another type (COVID-19 shown as written, then found as a person) stays as written. What a reviewer taught
+    # in earlier sets (the rules' never_hide list) works the same way on every new document.
+    taught = {name_words(deleted_text(k)) for k in ops.get("deleted", [])} | {name_words(t) for t in policy.never_hide}
+    taught.discard(frozenset())
+    for key, e in list(ents.items()) if taught else []:
+        if key in manual or "known_party" in e.sources:
+            continue  # redacted by hand, or a name you listed to always hide: those win
+        forms = {name_words(v.removeprefix(LIT)) for v in e.variants} - {frozenset()}
+        if forms and forms <= taught:
+            del ents[key]
+            deleted_items.append((key, e.type, next(iter(sorted(e.variants)), "").removeprefix(LIT)))
     for key, new_type in (ops.get("retype") or {}).items():   # "this is a person, not a company"
         if key in ents and new_type:
             ents[key].type = new_type
@@ -884,12 +959,18 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         return False
 
     # Context tool — role labels ("Defendant", "Buyer", "Target") instead of "Company B", when switched on.
+    # "a wholly owned subsidiary of Microsoft (“Merger Sub”)": a term right after "subsidiary of X" names the
+    # subsidiary, not X.
+    object_of = re.compile(r"(?i)\b(?:subsidiar(?:y|ies)|affiliates?|division|unit)\s+of\s+(?:the\s+)?$")
+
     def role_of(e: Entity) -> str:
         for rule in policy.role_rules:
             if e.type not in rule["types"]:
                 continue
             for doc, ms, me, _ in e.mentions:
                 window = texts[doc][me:me + 160] if rule["where"] == "after" else texts[doc][max(0, ms - 80):ms]
+                if rule["where"] == "after" and object_of.search(texts[doc][max(0, ms - 40):ms]):
+                    continue
                 m = rule["regex"].search(window)
                 if m:
                     role = rule["role"] or m.groupdict().get("role") or ""

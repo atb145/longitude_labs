@@ -70,13 +70,16 @@ keep_list:
     - '\b[A-Z][a-z]+(?:[-–][A-Z][a-z]+)+\s+(?:curve|estimator|model|method|test|formula|equation|value|option|options|distribution|index|ratio|plot|criterion|transform|theorem|algorithm|analysis|framework)\b'
     - '\b[A-Z][a-z]+(?:[-–][A-Z][a-z]+)*(?:’s|''s)?\s+(?:disease|syndrome|lymphoma|sarcoma|palsy|anomaly|reflex|law)\b'
     - '\b(?:Monte Carlo|Black-Scholes(?:-Merton)?|Kaplan-Meier|Fama-French|Cox (?:proportional|regression)|Sharpe ratio|Gini coefficient|Nash equilibrium|Pareto (?:optimal|efficient|principle)|Bayes(?:ian)?|Gaussian|Poisson|Bonferroni|Wilcoxon|Mann-Whitney|Kruskal-Wallis|Markowitz|Phillips curve|Laffer curve|Hodgkin(?:’s|''s)?)\b'
-    # Generic document furniture
+    # Generic document furniture: "Exhibit 99.1", "Annex C", "Article VI", "Section 5.3(c)", "Annex A-24"
     - '\b(?:Exhibit|Item|Schedule|Annex|Appendix)\s+\d+(?:\.\d+)*[A-Z]?\b'
+    - '\b(?i:Exhibit|Schedule|Annex|Appendix|Article|Section|Part|Chapter|Clause)\s+(?:[A-Z]{1,2}|[IVXLC]+|\d+)(?:[.\-–]\d+)*(?:\([a-z0-9]+\))*(?![\w-])'
+    # Public-health terms, never a party: "COVID-19" (also split over a line: "COVID-\n19"), "SARS-CoV-2"
+    - '(?i)\bCOVID(?:-\s*19)?(?![\w-])|\bSARS-CoV-2\b|\bcoronavirus\b'
 
 # Context tools: words around a name that make it a party to the engagement (edge case 1.1).
 party_cues:
   after:   # right after the name
-    - '^\s*\(?\s*(?:\n\s*)?\(Exact name of registrant'
+    - '(?i)^\s*\(?\s*(?:\n\s*)?\((?:exact\s+)?name\s+of\s+registrant'
     - '^[^.\n]{0,25}\((?:the\s+|collectively,?\s+)?[“"](?:Company|Buyer|Seller|Purchaser|Target|Parent|Merger Sub|Borrower|Lender|Client|Issuer|Registrant|Acquirer|Guarantor|Employer|Licensee|Licensor|Plaintiff|Defendant|Respondent)[”"]'
   before:  # right before the name
     - '(?i)(?:acquire|acquisition of|merger with|merge with|agreement with|on behalf of|our client,?|advised|represented|engaged by|counsel to|investment in|offer for|bid for|tender offer for|against)\s+(?:the\s+)?$'
@@ -86,17 +89,27 @@ party_cues:
 # two entities with the same role become "Defendant A", "Defendant B". (?P<role>…) is used as the label when
 # a rule has no fixed `role`.
 role_labels:
-  # Defined terms: Name (“Buyer”) · Name (the “Company”) · Name (“Asudani” or “Defendant”)
+  # SEC cover pages: "ACME CORP.\n(Exact name of registrant as specified in its charter)" (8-K, 10-K) or
+  # "(Name of Registrant as Specified In Its Charter)" (proxy, Schedule 14A). First, so it beats a defined term.
   - where: after
-    pattern: '^[^.\n]{0,25}\((?:the\s+|collectively,?\s+)?(?:[“"][^”"\n]{1,40}[”"]\s+or\s+(?:the\s+)?)?[“"](?P<role>Relief Defendant|Defendant|Plaintiff|Respondent|Company|Buyer|Seller|Purchaser|Target|Parent|Merger Sub|Borrower|Lender|Client|Issuer|Registrant|Acquirer|Guarantor|Employer|Employee|Licensee|Licensor|Adviser|Advisor|Trustee|Agent|Investor|Fund)s?[”"]'
+    pattern: '(?i)^\s*\(?\s*(?:\n\s*)?\((?:exact\s+)?name\s+of\s+registrant'
+    role: Registrant
+  # Defined terms: Name (“Buyer”) · Name (the “Company”) · Name (“Asudani” or “Defendant”) ·
+  # Name, a Washington corporation (“Parent”)
+  - where: after
+    pattern: '^(?:[^.\n]{0,25}|,\s+an?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+(?:corporation|company|limited liability company|limited partnership|partnership)\s*)\((?:the\s+|collectively,?\s+)?(?:[“"][^”"\n]{1,40}[”"]\s+or\s+(?:the\s+)?)?[“"](?P<role>Relief Defendant|Defendant|Plaintiff|Respondent|Company|Buyer|Seller|Purchaser|Target|Parent|Merger Sub|Borrower|Lender|Client|Issuer|Registrant|Acquirer|Guarantor|Employer|Employee|Licensee|Licensor|Adviser|Advisor|Trustee|Agent|Investor|Fund)s?[”"]'
   # Case captions: "JONATHAN R. MERCER, Defendant." / "…, Respondent." / "Relief Defendants."
   - where: after
     pattern: '^,?\s*\n?\s*(?P<role>Relief Defendants?|Defendants?|Respondents?|Plaintiffs?)\s*[.,]'
   - where: after   # "MERCER and HARBORVIEW CAPITAL PARTNERS LLC, Defendants." — the first name is one too
     pattern: '^\s+and\s+[^\n]{1,80}?,?\s*\n\s*(?P<role>Relief Defendants|Defendants|Respondents)\s*[.,]'
+  # Proxy style: "Anchorage Merger Sub Inc., which we refer to as “Sub,”" · "…, which we refer to as the “Company”"
   - where: after
-    pattern: '^\s*\(?\s*(?:\n\s*)?\(Exact name of registrant'
-    role: Registrant
+    pattern: '^[^.\n]{0,20}?,?\s+which\s+we\s+refer\s+to\s+as\s+(?:the\s+)?[“"](?P<role>Company|Parent|Merger Sub|Buyer|Seller|Purchaser|Target|Acquirer|Issuer)[,.]?[”"]'
+  - where: after
+    pattern: '^[^.\n]{0,20}?,?\s+which\s+we\s+refer\s+to\s+as\s+(?:the\s+)?[“"]Sub[,.]?[”"]'
+    role: Merger Sub
+    types: [ORGANIZATION]
   - where: before
     pattern: '(?i)(?:will acquire|to acquire|agreed to acquire|acquisition of|tender offer for|bid for|offer for)\s+(?:the\s+)?$'
     role: Target
@@ -133,7 +146,7 @@ generic_domains: [gmail, googlemail, yahoo, outlook, hotmail, live, msn, icloud,
 
 # Words detectors confuse with names, in any vertical.
 not_entities: [Press Release, Investor Presentation, Exhibit, Exhibits, Item, Schedule, Annex, Appendix, Form,
-               Section, Rule, Act, Agreement, Registrant, Report, Current Report, Annual Report, Signatures,
+               Section, Article, Articles, Rule, Act, Agreement, Registrant, Report, Current Report, Annual Report, Signatures,
                Media Relations, Investor Relations, Overview, Summary, Background, Introduction, Conclusion,
                State, Commission File, Zip Code, Emerging Growth Company, Common Stock, Notes,
                Privileged & Confidential, Privileged and Confidential, Confidential, Strictly Confidential,
