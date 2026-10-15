@@ -61,3 +61,32 @@ def test_public_terms_stay_readable_and_parties_are_still_hidden():
         assert party not in out, party
     names = {e.canonical for e in res.entities}
     assert not any(n.startswith(("Dear", "Pacific", "Article", "Annex", "Covid", "COVID")) for n in names), names
+
+
+def test_parenthetical_definitions_with_a_lead_in_are_vocabulary():
+    text = ("the last trading day (such fraction, the “Exchange Ratio”). Shares held by the Company "
+            "(collectively, the “Excluded Shares”). Any option above the price (any such Company Option, an “Underwater\n"
+            "Option”). Microsoft Corporation (“Microsoft”) and Activision Blizzard, Inc. (the “Company”) and "
+            "Acme Corp. (“Falcon”) on the deal (collectively, the “Project Falcon”).")
+    terms = defined_terms([text])
+    assert {"exchange ratio", "excluded share", "underwater option"} <= terms
+    # a bare (“X”) / (the “X”) names a party, nickname or codename; a codename never counts as vocabulary
+    assert not terms & {"microsoft", "company", "falcon", "project falcon"}
+    assert clean("Excluded Share", "PERSON", terms) is None
+    assert clean("Exchange Ratio", defined=terms) is None
+
+
+@pytest.mark.parametrize("role", ["Parent", "Sub", "Merger Sub", "Purchaser", "Notification"])
+def test_deal_roles_are_not_names(role):
+    assert clean(role) is None
+
+
+def test_keep_text_never_protects_half_a_name():
+    # The "Rule … under the Exchange Act" keep pattern used to run on to the "Act" in "Activision", leaving
+    # "Activision" readable next to the pseudonym of another company that owns "Blizzard".
+    text = ("Activision Blizzard, Inc. and its subsidiary Blizzard Entertainment, Inc. agree. Pursuant to Rule 14a-8 "
+            "under the Exchange Act and the Activision Blizzard bylaws, proposals must be received by Activision "
+            "Blizzard\nbetween February and March.")
+    out = Session.from_texts([("bylaws.txt", text)], POL).run().outputs[0]
+    assert "Activision" not in out and "Blizzard" not in out
+    assert "Rule 14a-8 under the Exchange Act" in out

@@ -204,7 +204,7 @@ keep_list:
     - '(?:\b[A-Z][\w.&’''-]*\s+){0,5}\b[A-Z][\w.&’''-]*\s+v\.\s+(?:[A-Z][\w.&’''-]*,?\s+){0,5}?[A-Z][\w.&’''-]*,\s+\d{1,4}\s+(?:U\.S\.|S\.\s?Ct\.|L\.\s?Ed\.(?:\s?2d)?|F\.(?:\s?(?:2d|3d|4th))?|F\.\s?Supp\.(?:\s?(?:2d|3d))?|F\.\s?App’x|B\.R\.)\s+\d{1,5}(?:,\s*\d+)?\s*\([^)]{0,40}\d{4}\)'
     - '\b\d{1,2}\s+(?:U\.S\.C\.|C\.F\.R\.|CFR)\s+(?:§+\s*)?\d+[\w.()-]*'
     - '§+\s*\d+[\w.()-]*'
-    - '\b(?:Rule|Regulation|Form|Section|Item)\s+\d+[\w.()-]*(?:\s+(?:under|of)\s+the\s+(?:Securities|Exchange|Investment)[\w ]+Act(?:\s+of\s+\d{4})?)?'
+    - '\b(?:Rule|Regulation|Form|Section|Item)\s+\d+[\w.()-]*(?:\s+(?:under|of)\s+the\s+(?:Securities|Exchange|Investment)[\w ]+?\bAct\b(?:\s+of\s+\d{4})?)?'
     - '\b(?:Securities|Securities Exchange|Investment Advisers|Investment Company|Sarbanes-Oxley|Dodd-Frank)(?:\s+[A-Z][a-z]+)*\s+Act(?:\s+of\s+\d{4})?'
     - '\bRegulation\s+(?:FD|S-K|S-X|M|SHO|D|A|BI)\b'
     # The regulator's own address block is public.
@@ -222,7 +222,9 @@ not_entities: [CRD, CRD No, CFO, CEO, COO, CCO, SSN, EIN, CUSIP, MNPI, ATS, Comm
                Trust, Trustee, Issuer, Company, Individual, Defendants’, Investment Advisers,
                # finance vocabulary the language model tags as companies
                GAAP, Non-GAAP, EBIT, EBITDA, Adjusted EBITDA, LTM, NTM, EPS, CAGR, WACC, DCF, NOL, NOLs, NOPAT,
-               PSU, PSUs, RSU, RSUs, ERISA, COBRA, UCC, FCPA, D&O, D&O Insurance, Medicare, Medicaid]
+               PSU, PSUs, RSU, RSUs, ERISA, COBRA, UCC, FCPA, D&O, D&O Insurance, Medicare, Medicaid,
+               # deal roles: who a party is in the agreement, never a name ("Target" is left out: it is a company)
+               Parent, Sub, Merger Sub, Merger Subsidiary, Purchaser, Buyer, Seller, Acquirer, Holdco, Notification]
 
 # Words that get glued onto the front of a name by detectors ("Defendants Meyer Global LLC").
 name_noise_words: [defendant, defendants, plaintiff, relief, respondent, against, former, another, sold, bought,
