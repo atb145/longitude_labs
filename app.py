@@ -2151,30 +2151,91 @@ def audit_trail(sess: Session, res) -> None:
 # A saved setup: the settings and rule switches, plus the labels and corrections made by hand. Entries live in
 # this browser tab's session only (no database); "Use again" applies one to the next set that's started.
 LIBRARY_OPS = ("labels", "decisions", "retype", "manual", "merges", "splits", "deleted", "aliases", "parties")
-LIBRARY_EXAMPLES = [  # invented names; keys match the bundled 8-Ks, so "Use again" + "Try the sample case" shows it
+LIBRARY_EXAMPLES = [  # invented setups for the bundled 8-Ks; each name is "TYPE:name as written", found by name
     {"name": "Project Granite — merger 8-Ks", "date": "Sep 30, 2026",
      "settings": {"disabled": ["MONEY", "SHARE_COUNT"]},
-     "ops": {"labels": {"ORGANIZATION:microsoft": "Acquirer", "ORGANIZATION:activision blizzard": "Target",
-                        "ORGANIZATION:anchorage merger sub": "Merger Sub"}}},
+     "ops": {"labels": {"ORGANIZATION:Microsoft Corporation": "Acquirer",
+                        "ORGANIZATION:Activision Blizzard, Inc.": "Target",
+                        "ORGANIZATION:Anchorage Merger Sub Inc.": "Merger Sub"}}},
     {"name": "Item 5.02 officer-change review", "date": "Aug 12, 2026",
      "settings": {"disabled": ["URL", "flag.group_inference"], "date_mode": "relative"},
-     "ops": {"labels": {"PERSON:robert kotick": "Departing CEO", "PERSON:luci altman": "Company signatory"}}},
+     "ops": {"labels": {"PERSON:Robert Kotick": "Departing CEO", "PERSON:Luci Altman": "Company signatory"}}},
 ]
 
 
-def library_entry(name: str, when: str, policy, settings: dict, ops: dict) -> dict:
+def rekey(ops: dict, f) -> dict:
+    """The same changes with every entity key passed through f (a review answer on a name is "E|<key>")."""
+    import copy
+    ops = copy.deepcopy(ops)
+    for k in ("labels", "retype"):
+        if ops.get(k):
+            ops[k] = {f(key): v for key, v in ops[k].items()}
+    if ops.get("decisions"):
+        ops["decisions"] = {("E|" + f(k[2:]) if k.startswith("E|") else k): v for k, v in ops["decisions"].items()}
+    if ops.get("deleted"):
+        ops["deleted"] = [f(k) for k in ops["deleted"]]
+    if ops.get("merges"):
+        ops["merges"] = [(f(a), f(b)) for a, b in ops["merges"]]
+    if ops.get("splits"):
+        ops["splits"] = [(f(k), form, t, f(into) if into else into) for k, form, t, into in ops["splits"]]
+    if ops.get("aliases"):
+        ops["aliases"] = [(f(k), text) for k, text in ops["aliases"]]
+    return ops
+
+
+def entity_names(res, ops: dict) -> dict:
+    """How each name the changes refer to is written in this set ({key: {"type", "forms"}}). "Use again" finds it
+    by these spellings in the next set: a key can change when a document adds a longer spelling."""
+    by_key = {e.key: e for e in res.entities}
+    gone = {k: (t, text) for k, t, text in res.deleted}
+    names = {}
+
+    def note(k: str) -> str:
+        if k in by_key:
+            e = by_key[k]
+            names[k] = {"type": e.type, "forms": sorted({e.canonical} | {m[3] for m in e.mentions})}
+        else:
+            t, text = gone.get(k, (None, deleted_text(k)))
+            names[k] = {"type": t, "forms": [text]}
+        return k
+    rekey(ops, note)
+    return names
+
+
+def match_names(res, names: dict) -> dict:
+    """{saved key: key in this set} for every saved name written here the same way (any of its spellings);
+    the same type wins a tie. Unmatched names keep their key."""
+    spelled = {e.key: {norm_form(e.type, f) for f in [e.canonical] + [m[3] for m in e.mentions]} - {""}
+               for e in res.entities}
+    found = {}
+    for old, ref in names.items():
+        def score(e):
+            want = {norm_form(e.type, f) for f in ref["forms"]}
+            return len(want & spelled[e.key]), e.type == ref.get("type"), len(e.mentions)
+        best = max(res.entities, key=score, default=None)
+        if best is not None and score(best)[0]:
+            found[old] = best.key
+    return found
+
+
+def library_entry(name: str, when: str, policy, settings: dict, ops: dict, names: dict | None = None) -> dict:
     import copy
     disabled = settings.get("disabled") or []
-    return {"name": name, "date": when, "policy": policy.name, "settings": copy.deepcopy(settings),
-            "ops": {k: copy.deepcopy(ops[k]) for k in LIBRARY_OPS if ops.get(k)},
+    ops = {k: copy.deepcopy(ops[k]) for k in LIBRARY_OPS if ops.get(k)}
+    used = set()
+    rekey(ops, lambda k: used.add(k) or k)
+    return {"name": name, "date": when, "policy": policy.name, "settings": copy.deepcopy(settings), "ops": ops,
+            "names": {k: v for k, v in (names or {}).items() if k in used},
             "toggles_on": sum(bid not in disabled for _, bid, _, _ in policy.buckets())}
 
 
 def library_entries() -> list[dict]:
     if "library" not in st.session_state:
         finance = load_policy(available_policies()["Finance"])
-        st.session_state.library = [library_entry(x["name"], x["date"], finance, x["settings"], x["ops"])
-                                    for x in LIBRARY_EXAMPLES]
+        by_name = lambda ops: {k: {"type": k.split(":", 1)[0], "forms": [k.split(":", 1)[1]]}
+                               for k in ops.get("labels", {})}
+        st.session_state.library = [library_entry(x["name"], x["date"], finance, x["settings"], x["ops"],
+                                                  by_name(x["ops"])) for x in LIBRARY_EXAMPLES]
     return st.session_state.library
 
 
@@ -2234,7 +2295,8 @@ def send_to_library(sess: Session, items: list) -> None:
     settings = sess.settings if any(key == "settings" for _, _, key, _ in picked) else {}
     name = " ".join(st.session_state.get("lib_name", "").split()) or f"{sess.policy.name} set"
     d = date.today()
-    library_entries().insert(0, library_entry(name, f"{d:%b} {d.day}, {d.year}", sess.policy, settings, ops))
+    library_entries().insert(0, library_entry(name, f"{d:%b} {d.day}, {d.year}", sess.policy, settings, ops,
+                                              entity_names(sess.run(), ops)))
     st.session_state.focus_note = f"Saved to Library: “{name}”"
 
 
@@ -2291,7 +2353,8 @@ def use_library_entry(i: int, start_over: bool = False) -> None:
 def apply_library_entry(sess: Session, entry: dict) -> None:
     import copy
     sess.settings.update(copy.deepcopy(entry["settings"]))
-    sess.ops.update(copy.deepcopy(entry["ops"]))
+    found = match_names(sess.run(), entry.get("names") or {})  # each saved name, found by how it's written
+    sess.ops.update(rekey(entry["ops"], lambda k: found.get(k, k)))
     for k in [k for k in st.session_state if k.startswith(("b_", "t_"))]:
         st.session_state.pop(k, None)  # the sidebar switches pick the saved values up again
     st.session_state.focus_note = f"Using “{entry['name']}” from the Library — its settings and corrections are on"
