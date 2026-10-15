@@ -351,3 +351,30 @@ def test_bundled_sample_is_the_two_sec_8ks(monkeypatch):
         at.session_state.view = view
         at.run()
         assert not at.exception, (view, at.exception)
+
+
+def test_change_label_helpers_suggest_route_and_guess_carefully():
+    h = _helpers()
+    from engine import Session
+    root = pathlib.Path(APP).parent
+    s = Session.from_files([(p.name, p.read_bytes()) for p in sorted((root / "samples").glob("*.pdf"))])
+    res = s.run()
+    addr = next(e for e in res.entities if e.type == "STREET_ADDRESS" and "Microsoft Way" in e.canonical)
+    company = next(e for e in res.entities if e.canonical == "Microsoft Corporation")
+    # a plainer label to offer: the category alone for an address, a letter for a company
+    assert h["suggested_labels"](res, addr) == ["Address"]
+    assert h["suggested_labels"](res, company)[0].startswith("Company ")
+    # selecting text that's already hidden opens that name's "Change label", not a second dialog
+    assert h["hidden_owner"](res, "Microsoft Corporation").key == company.key
+    assert h["hidden_owner"](res, company.label).key == company.key           # the label as shown
+    assert h["hidden_owner"](res, "Securities and Exchange Commission") is None   # still showing: new hide
+    # an address that mentions "Microsoft" isn't "part of" the company
+    assert h["likely_label"](res, "One Microsoft Way, Redmond, Washington 98052-6399") is None
+    # addresses (and dates) are categories you can move or split something into
+    cats = h["categories"](s, res)
+    assert "STREET_ADDRESS" in cats and "DATE" in cats and cats[-1] == "MANUAL"
+
+
+def test_keyboard_undo_presses_the_undo_button():
+    src = pathlib.Path(APP).read_text()
+    assert "window.__llUndoKey" in src and "e.metaKey || e.ctrlKey" in src and "'↶ Undo'" in src

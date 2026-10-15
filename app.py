@@ -429,7 +429,8 @@ def categories(sess: Session, res, keep: str = "") -> list[str]:
                                      + [p.get("type") or "" for p in ops.get("parties", [])]
                                      + list((ops.get("retype") or {}).values()))
             if t.startswith("OTHER:")]
-    built_in = ["PERSON", "ORGANIZATION"] + [t for t, sp in sess.policy.entities.items() if sp.get("action") == "redact"]
+    built_in = ["PERSON", "ORGANIZATION"] + [t for t, sp in sess.policy.entities.items()
+                                             if sp.get("action") in ("redact", "generalize")]  # Address, Date too
     out = sorted(dict.fromkeys(built_in + made + ([keep] if keep and keep != "MANUAL" else [])), key=lambda t: cat_name(t).lower())
     return out + ["MANUAL"]  # A–Z, with plain "Other" last
 
@@ -521,11 +522,23 @@ def split_controls(sess: Session, res, ent, key: str) -> None:
                                         st.session_state[f"{key}_dest"]))
 
 
+def suggested_labels(res, item) -> list[str]:
+    """A plainer label to offer for a name: its category on its own ("Address" for "Address of principal executive
+    offices"), lettered for people and companies ("Company A"), numbered if taken ("Address 2")."""
+    base = cat_name(item.type)
+    taken = {e.label.casefold() for e in res.entities if e.key != item.key}
+    letters = item.type in ("PERSON", "ORGANIZATION")
+    cands = ((f"{base} {chr(65 + i)}" for i in range(26)) if letters
+             else iter([base] + [f"{base} {n}" for n in range(2, 100)]))
+    pick = next((c for c in cands if c.casefold() not in taken), None)
+    return [pick] if pick and pick != item.label else []
+
+
 def replacement_picker(res, item, key: str, default: str, title: str = "Replacement",
                        suggest: str | None = None) -> tuple[str, str]:
-    """Dropdown of existing replacements (with examples) plus "Add new". Returns (kind, value):
-    ("new", text) | ("existing", entity key) | ("text", flag replacement). ``suggest`` (an entity key) is
-    preselected: the label this probably belongs in."""
+    """Dropdown: "Add new" (empty = keep what it is now), a suggested plainer label, and the existing labels to
+    join (with examples). Returns ("new", text) | ("existing", entity key) | ("text", flag replacement).
+    ``suggest`` (an entity key) is preselected: the label this probably belongs in."""
     is_flag = item is not None and not hasattr(item, "variants")
     if is_flag:
         pool = sorted({f.replacement_for(f.text) for f in res.flags if f.status in ("accepted", "edited")}
@@ -533,20 +546,29 @@ def replacement_picker(res, item, key: str, default: str, title: str = "Replacem
         choice = st.selectbox("Replacement", ["__new__"] + pool, key=key, index=1 + pool.index(default) if default in pool else 0,
                               format_func=lambda k: "➕ Add new replacement" if k == "__new__" else k)
         if choice == "__new__":
-            return "text", st.text_input("New replacement", default, key=f"{key}_txt")
+            typed = st.text_input("New replacement", "", key=f"{key}_txt",
+                                  placeholder=f"Leave empty to keep “{_flat(default, 60)}”" if default else "")
+            return "text", typed.strip() or default
         return "text", choice
     own = getattr(item, "key", None) if item is not None else None
     t = getattr(item, "type", None)
     pool = sorted((e for e in res.entities if e.is_redacted and e.key != own),
                   key=lambda e: (e.type != t, e.type, e.label))
     by = {e.key: e for e in pool}
-    keys = ["__new__"] + list(by)
+    tips = suggested_labels(res, item) if item is not None else []
+    keys = ["__new__"] + [f"tip:{x}" for x in tips] + list(by)
     choice = st.selectbox(title, keys, key=key, index=keys.index(suggest) if suggest in by else 0,
                           format_func=lambda k: "➕ Add new replacement" if k == "__new__"
+                          else f"★ Suggested: {k[4:]}" if k.startswith("tip:")
                           else f"{by[k].label} — e.g. {examples(by[k])}")
     if choice == "__new__":
-        return "new", st.text_input("New replacement", default, key=f"{key}_txt",
-                                    placeholder="Leave empty for the next free label")
+        now = getattr(item, "label", "") if item is not None else ""
+        return "new", st.text_input("New replacement", "", key=f"{key}_txt",
+                                    placeholder=f"Leave empty to keep “{now}”" if now
+                                    else "Leave empty for the next free label")
+    if choice.startswith("tip:"):
+        st.caption(f"Becomes “{choice[4:]}” in every file.")
+        return "new", choice[4:]
     st.caption(f"Joins {by[choice].label} everywhere.")
     return "existing", choice
 
@@ -1731,14 +1753,34 @@ def likely_label(res, phrase: str):
     """The existing label a phrase probably belongs in: one that shares a name word with it ("D. Okafor" →
     the label for Daniel K. Okafor). None if nothing matches."""
     words = {w.casefold() for w in _WORD.findall(phrase) if w[:1].isupper()} - _NOT_A_NAME
+    if not words or re.search(r"\d", phrase):  # numbers: an address, a date, an account — not part of a name
+        return None
     best = (0, None)
     for e in res.entities:
         if not e.is_redacted or e.nick_target or not (e.type in ("PERSON", "ORGANIZATION") or e.type.startswith("OTHER:")):
             continue
         n = len(words & {w.casefold() for m in e.mentions for w in _WORD.findall(m[3])})
-        if n > best[0]:
+        if n > best[0] and n * 2 >= len(words):  # at least half the phrase's name words are that name's
             best = (n, e)
     return best[1]
+
+
+def hidden_owner(res, phrase: str):
+    """The hidden name a selected phrase already is: every place it appears sits inside one hidden name's
+    mention, or the phrase is that name's label. None if any of it is still showing."""
+    body = r"\s+".join(map(re.escape, phrase.split()))
+    if not body:
+        return None
+    spans = [(i, m.start(), m.end()) for i, t in enumerate(res.texts)
+             for m in re.finditer(r"(?<![\w])" + body + r"(?![\w])", t)]
+    owners = {next((e.key for e in res.entities if e.is_redacted for md, ms, me, _ in e.mentions
+                    if md == d and ms <= a and b <= me), None) for d, a, b in spans}
+    if spans and len(owners) == 1 and None not in owners:
+        return res.entity(owners.pop())
+    if not spans:  # the selection is a label as shown ("Registrant A")
+        return next((e for e in res.entities if e.is_redacted and
+                     phrase.lower() in {e.replacement_for(m[3]).lower() for m in e.mentions}), None)
+    return None
 
 
 @st.dialog("Hide text")
@@ -1990,7 +2032,11 @@ def documents(sess: Session, res) -> None:
             st.session_state.edit_mode = not edit
             st.rerun()
         elif action["kind"] == "redact":
-            redact_dialog(sess, res, action)
+            owner = hidden_owner(res, " ".join(action["text"].split()))
+            if owner is not None:  # already hidden: the same "Change label" as clicking the highlight
+                edit_dialog(sess, res, "E|" + owner.key)
+            else:
+                redact_dialog(sess, res, action)
         elif action["kind"] == "edit":
             edit_dialog(sess, res, action["ref"])
 
@@ -2364,6 +2410,15 @@ else:
     # Ask before leaving: nothing is saved, so a refresh would wipe the work.
     st.html("<script>window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue = ''; };</script>",
             unsafe_allow_javascript=True)
+    # ⌘Z / Ctrl+Z presses ↶ Undo, except while typing in a field (which keeps its own undo).
+    st.html("""<script>if (!window.__llUndoKey) { window.__llUndoKey = true;
+      document.addEventListener('keydown', (e) => {
+        if (e.key.toLowerCase() !== 'z' || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+        const a = document.activeElement;
+        if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
+        const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === '↶ Undo' && !x.disabled);
+        if (b) { e.preventDefault(); b.click(); }
+      }); }</script>""", unsafe_allow_javascript=True)
     st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
     {"Start": start_view, "Review": review, "Documents": documents, "Final": final_view}[view](sess, res)
     res = sess.run()  # a click on this step may have changed what's done
