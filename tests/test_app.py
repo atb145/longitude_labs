@@ -166,9 +166,10 @@ def test_rules_from_the_last_set_are_used_again():
     carried = sess.export_rules(sess.policy.name)
     at = AppTest.from_file(APP, default_timeout=180)
     at.session_state.carry_rules = carried
+    at.session_state.carry_from = "01_complaint.txt + 2 more"  # which set the rules came from
     at.run()
     assert not at.exception
-    assert at.session_state.rules_pick == "Your rules from the last set"
+    assert at.session_state.rules_pick == "Your rules from 01_complaint.txt + 2 more"
     next(b for b in at.button if b.label == "Try with sample case").click().run()
     assert not at.exception
     again = at.session_state.session
@@ -298,7 +299,7 @@ def test_back_and_next_at_the_bottom_of_every_step():
     assert any('class="fix-note"' in m.value and "still need" in m.value for m in at.markdown)
 
 
-def test_labels_switch_on_top_changes_every_label():
+def test_labels_switch_in_settings_changes_every_label():
     at, sess = _sample_app()
     assert at.sidebar.button_group[0].value == "context" and sess.settings["role_labels"]
     names = lambda: " ".join(b.label for b in at.sidebar.button)
