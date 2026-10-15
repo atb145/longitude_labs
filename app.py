@@ -1074,10 +1074,10 @@ def example_pair(res, e) -> tuple[str, str]:
 def start_view(sess: Session, res) -> None:
     """Step 1 while a set is open: the files in it, add more, the labels. (Next is the button at the bottom.)"""
     st.markdown('<h2>Your files</h2>', unsafe_allow_html=True)
-    rows = [{"file": name, "status": ("✓ approved" if is_current(sess, res, i) else
-                                      "changed since approval" if i in sess.approved else "in progress"),
-             "hidden": len([g for g in res.segments[i] if g.kind != "tidy"]),
-             "notes": "; ".join(w["message"] for w in (sess.warnings[i] if i < len(getattr(sess, 'warnings', []) or []) else []))}
+    rows = [{"File": name, "Status": ("✓ Approved" if is_current(sess, res, i) else
+                                      "Changed since approval" if i in sess.approved else "In progress"),
+             "Hidden": len([g for g in res.segments[i] if g.kind != "tidy"]),
+             "Notes": "; ".join(w["message"] for w in (sess.warnings[i] if i < len(getattr(sess, 'warnings', []) or []) else []))}
             for i, name in enumerate(res.names)]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     st.markdown('<div style="height:.6rem"></div>', unsafe_allow_html=True)
@@ -2029,7 +2029,7 @@ def documents(sess: Session, res) -> None:
         for g in res.segments[doc]:
             if g.kind != "tidy":
                 seen.setdefault((g.original, g.replacement), type_name(g.type))
-        st.dataframe(pd.DataFrame([{"original": o, "shown as": r, "type": t} for (o, r), t in seen.items()]),
+        st.dataframe(pd.DataFrame([{"Original": o, "Shown as": r, "Type": t} for (o, r), t in seen.items()]),
                      hide_index=True, width="stretch")
 
 

@@ -1190,6 +1190,17 @@ def build(names: list[str], texts: list[str], detections: list[Detection], polic
         else:
             e.status = "auto" if e.tier == "auto" else "pending"
 
+    # One label per name: several names under the same caption (two covers' "Address of principal executive
+    # offices") become "… A", "… B" in reading order, like Registrant A / B. A reviewer's rename is never touched.
+    by_caption = defaultdict(list)
+    for e in entities:
+        if e.rule == "generalize.context_caption":
+            by_caption[e.label].append(e)
+    for caption, group in by_caption.items():
+        if len(group) > 1:
+            for i, e in enumerate(sorted(group, key=lambda x: min(m[:2] for m in x.mentions))):
+                e.label = e.proposed = f"{caption} {_letters(i)}"
+
     # 6. Flags: never auto-changed. "match" flags cover the matched words (relationship phrases);
     #    "sentence" flags cover the whole sentence (privilege, group inference, identifying combinations).
     flags: dict[str, Flag] = {}

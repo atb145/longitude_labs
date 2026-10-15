@@ -63,3 +63,14 @@ def test_numbers_near_capitalized_words_are_not_addresses():
     text = "Under Section 2 of the Act, the 2023 Board Meeting Street fair was approved."
     res = Session.from_texts([("plain.txt", text)], POL).run()
     assert not [e for e in res.entities if e.type == "STREET_ADDRESS"]
+
+
+def test_two_covers_get_different_address_labels_and_a_rename_still_wins():
+    sess = Session.from_texts([("msft_8k.txt", COVER_ONE_LINE), ("atvi_8k.txt", COVER_TWO_LINES)], POL)
+    addresses = sorted((e for e in sess.run().entities if e.type == "STREET_ADDRESS"), key=lambda e: e.mentions[0][0])
+    assert [e.label for e in addresses] == ["Address of principal executive offices A",
+                                            "Address of principal executive offices B"]
+    sess.rename(addresses[1].key, "Target headquarters")
+    labels = {e.key: e.label for e in sess.run().entities if e.type == "STREET_ADDRESS"}
+    assert labels[addresses[1].key] == "Target headquarters"
+    assert labels[addresses[0].key] == "Address of principal executive offices"   # alone again: plain caption
