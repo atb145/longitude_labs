@@ -21,7 +21,7 @@ the deal (2022-01-18) and Activision Blizzard's 8-K reporting it completed (2023
 
 ## How it works
 
-1. **Upload** a set of `.pdf`, `.docx` or `.txt` files (or press *Try with sample case*). Files are
+1. **Upload** a set of `.pdf`, `.docx` or `.txt` files (or press *Try the sample case*). Files are
    read in memory; the app never writes uploads to disk.
 2. **Detect** — Microsoft Presidio with spaCy `en_core_web_lg`, organization detection switched on,
    plus regex recognizers defined in the policy pack (account, CRD, CUSIP, ticker, case/docket
